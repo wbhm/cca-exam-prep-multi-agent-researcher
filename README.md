@@ -1,0 +1,159 @@
+# CCA Exam Prep: Multi-Agent Research System
+
+Hands-on coding example for the [Claude Certified Architect (CCA) Foundations Exam](https://anthropic.skilljar.com) -- the **Multi-Agent Research System** scenario.
+
+This is the scenario that separates strong CCA candidates from average ones. It draws from the three heaviest exam domains simultaneously:
+
+| Domain | Weight | What This Project Covers |
+|--------|--------|--------------------------|
+| Agentic Architecture & Orchestration | 27% | Hub-and-spoke coordinator, task decomposition, parallel waves |
+| Tool Design & MCP Integration | 18% | 4-5 tools per agent, negative-bound descriptions, MCP primitives |
+| Context Management & Reliability | 15% | Context isolation, structured errors, conflict resolution |
+| **Combined** | **60%** | **Every concept in this project maps to exam questions** |
+
+## How This Maps to the CCA Exam
+
+The CCA exam tests these concepts with specific question patterns. Each notebook demonstrates the correct answer and the most common distractor:
+
+| Notebook | CCA Concept | Correct Answer (demonstrated) | Common Distractor (shown failing) |
+|----------|------------|-------------------------------|-----------------------------------|
+| 01 Hub-and-Spoke | Architecture | Single coordinator delegates to specialized subagents | Subagents communicate directly with each other |
+| 02 Context Isolation | Context passing | Explicit context -- subagent sees ONLY what coordinator sends | Subagents inherit coordinator's conversation history |
+| 03 Tool Scoping | Tool count | 4-5 focused tools per agent | 18-tool "super agent" with improved descriptions |
+| 04 Error Handling | Reliability | Structured error context (`error_type`, `retry_eligible`) | Silent failure: `{"status":"success","data":null}` |
+| 05 Task Decomposition | Orchestration | Parallel + sequential waves based on data dependencies | All tasks run sequentially |
+| 06 Conflict Resolution | Synthesis | Reliability ranking -> majority consensus -> human flag | First result wins |
+| 07 MCP Primitives | Vocabulary | Tools (verbs), Resources (nouns), Prompts (templates) | Mixing up tools and resources |
+| 08 Integration | End-to-end | All patterns combined in a full research query | N/A (capstone) |
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+poetry install --with notebooks
+
+# 2. Set your API key (optional -- tests work without it)
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+
+# 3. Run all 180 tests (no API key needed)
+poetry run pytest
+
+# 4. Launch notebooks
+poetry run jupyter lab
+```
+
+## Architecture: What the Code Teaches
+
+### The Hub-and-Spoke Pattern (CCA Architecture Domain)
+
+The `coordinator.py` implements a 6-step flow that mirrors the exam's correct answer for multi-agent orchestration:
+
+```
+1. PLAN      Decompose query into SubTasks with depends_on fields
+2. SORT      Topological sort into parallel execution waves
+3. DELEGATE  Build explicit context -> run_agent_loop with scoped tools
+4. EVALUATE  Send results to fact_checker for cross-referencing
+5. RESOLVE   Deterministic conflict resolution (not LLM judgment)
+6. SYNTHESIZE Compile ResearchReport with findings, conflicts, and gaps
+```
+
+Subagents (spokes) only talk to the coordinator (hub), never to each other.
+
+### Context Isolation (CCA Context Management Domain)
+
+`context_builder.py` is the enforcer. It's the ONLY way to create subagent input:
+- **Receives**: `SubTask.instruction`, `SubTask.context` (explicitly selected), predecessor results filtered by `depends_on`
+- **Never receives**: coordinator messages, coordinator system prompt, other subagents' results
+
+When the exam asks "the subagent produced results that contradicted the coordinator's instructions" -- the answer is always that the instructions were in the coordinator's context but never explicitly forwarded.
+
+### Tool Scoping: 4-5 Per Agent (CCA Tool Design Domain)
+
+Five agent types, each with exactly 4 focused tools:
+
+| Agent | Tools | Purpose |
+|-------|-------|---------|
+| Web Researcher | `search_web`, `fetch_page`, `extract_text`, `summarize_source` | Find and process web content |
+| Document Analyzer | `parse_document`, `extract_sections`, `identify_claims`, `check_citations` | Analyze document structure |
+| Data Extractor | `query_database`, `transform_data`, `validate_schema`, `format_output` | Extract structured data |
+| Fact Checker | `verify_claim`, `cross_reference`, `score_reliability`, `flag_conflict` | Verify accuracy |
+| Coordinator | `delegate_task`, `collect_results`, `resolve_conflicts`, `compile_report` | Orchestrate and synthesize |
+
+The anti-pattern (`super_agent.py`) combines all 20 tools into one agent. The exam's correct answer is always "decompose into specialized subagents" -- not "improve tool descriptions."
+
+### Structured Error Handling vs Silent Failures (CCA Reliability Domain)
+
+Every tool handler returns a `ToolErrorResponse` on failure with `error_type`, `retry_eligible`, `fallback_available`, and `partial_data`. The coordinator uses this to retry timeouts, flag gaps, and adjust confidence.
+
+The anti-pattern returns `{"status":"success","data":null}` -- making it impossible to distinguish "no data found" from "service failed." The exam answer is always "require structured error context from subagents."
+
+### Deterministic Conflict Resolution
+
+When sources contradict, `conflict_resolver.py` uses three strategies in priority order:
+1. **Source reliability ranking**: `.gov` (3 pts) > news (2 pts) > blog (1 pt)
+2. **Majority consensus**: when reliability ties, more sources wins
+3. **Flag for human review**: when everything ties
+
+This is programmatic enforcement -- the CCA principle that code-enforced rules beat prompt-based guidance.
+
+## Project Structure
+
+```
+src/research_agents/
+  agent/
+    coordinator.py          # Hub-and-spoke orchestrator (6-step flow)
+    agent_loop.py           # Stop-reason-driven agentic tool-use loop
+    context_builder.py      # Enforces context isolation
+    subagents.py            # System prompts + tool sets per agent type
+    conflict_resolver.py    # Deterministic: reliability, majority, human flag
+  models/
+    research.py             # SubTask, ResearchReport, ConflictRecord, etc.
+    errors.py               # ToolErrorResponse vs SilentFailureResponse
+  services/                 # 4 simulated in-memory services + ServiceContainer
+  tools/
+    definitions.py          # 5 tool-set constants (4 tools each)
+    handlers.py             # Dispatch registry: DISPATCH[agent_type][tool_name]
+    web_researcher.py       # Handler implementations (structured errors)
+    document_analyzer.py
+    data_extractor.py
+    fact_checker.py
+  anti_patterns/
+    super_agent.py          # 18+ tools on one agent
+    shared_context.py       # Coordinator messages leaked to subagent
+    silent_failures.py      # {"status":"success","data":null}
+  data/
+    sources.py              # Pre-built data with contradictions + errors
+    scenarios.py            # 3 research scenarios with expected outcomes
+notebooks/                  # 9 teaching notebooks (00-08)
+tests/                      # 180 tests: models, services, tools, agent, notebooks
+scripts/
+  generate_notebooks.py     # Programmatic notebook generation via nbformat
+```
+
+## Testing
+
+All 180 tests run without an API key -- services are simulated in-memory.
+
+The notebook-test correlation uses a 3-tier safety net:
+1. **Structural tests** verify notebooks have correct sections, imports, and metrics
+2. **Headless execution** runs non-API cells via `nbformat` + `exec()`
+3. **Anti-pattern module tests** verify wrong code is wrong in the right way
+
+## Series Context
+
+This is Article 4 of the CCA Exam Prep series by [Rick Hightower](https://medium.com/@rick-hightower) / [SpillWave](https://spillwave.com):
+
+1. **Complete Guide** -- Exam format, domain weights, study plan
+2. **Customer Support Agent** -- Escalation, compliance, tool design ([sibling project](../customer_service/))
+3. **Code Generation** -- Context degradation, CLAUDE.md hierarchy, CI/CD
+4. **Multi-Agent Research** -- Hub-and-spoke, context isolation, tool scoping (this project)
+5. **CI/CD with Claude Code** -- Headless flags, pipeline patterns
+6. **Structured Data Extraction** -- JSON schema enforcement, validation loops
+
+## Recommended Study Resources
+
+- [Anthropic Academy](https://anthropic.skilljar.com) -- 13 free courses
+- [CCA Exam Guide on SlideShare](https://www.slideshare.net/) -- Official exam guide
+- [Claude Agent SDK Docs](https://docs.anthropic.com/) -- Agent patterns
+- [MCP Documentation](https://modelcontextprotocol.io/) -- Tool/Resource/Prompt primitives

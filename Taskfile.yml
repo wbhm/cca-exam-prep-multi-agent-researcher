@@ -1,0 +1,114 @@
+version: '3'
+
+# CCA Exam Prep - Multi-Agent Research System
+# Standardized Poetry project commands following Task best practices
+
+dotenv: ['.env']
+
+vars:
+  PROJECT_NAME: research_agents
+  NOTEBOOK_DIR: notebooks
+  SETUP_NOTEBOOK: "{{.NOTEBOOK_DIR}}/00_setup.ipynb"
+
+env:
+  PYTHONPATH: './src:./tests'
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+
+  clean:
+    desc: Remove build artifacts and temporary files
+    cmds:
+      - rm -rf dist/ build/ *.egg-info .pytest_cache/ .coverage htmlcov/
+      - find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+  install:
+    desc: Install all dependencies (core + dev + notebooks)
+    cmds:
+      - poetry install --with notebooks
+    sources:
+      - pyproject.toml
+      - poetry.lock
+    generates:
+      - .venv/**/*
+
+  check-key:
+    desc: Verify ANTHROPIC_API_KEY is set
+    silent: true
+    cmds:
+      - |
+        if [ -z "${ANTHROPIC_API_KEY}" ] || [ "${ANTHROPIC_API_KEY}" = "your-api-key-here" ]; then
+          echo ""
+          echo "=========================================="
+          echo "  ANTHROPIC_API_KEY not configured"
+          echo "=========================================="
+          echo ""
+          echo "To fix, create a .env file:"
+          echo ""
+          echo "  cp .env.example .env"
+          echo "  # Edit .env and add your real API key"
+          echo ""
+          echo "Or export it directly:"
+          echo ""
+          echo "  export ANTHROPIC_API_KEY=sk-ant-..."
+          echo ""
+          exit 1
+        fi
+        echo "[OK] ANTHROPIC_API_KEY is set"
+
+  setup:
+    desc: Run the setup notebook to verify your environment
+    deps: [install, check-key]
+    cmds:
+      - poetry run jupyter lab "{{.SETUP_NOTEBOOK}}"
+
+  notebook:
+    desc: Launch Jupyter Lab (general use)
+    deps: [install, check-key]
+    cmds:
+      - poetry run jupyter lab
+
+  test:
+    desc: Run unit tests
+    deps: [install]
+    cmds:
+      - poetry run pytest tests/ -q
+
+  lint:
+    desc: Check code for style violations and errors
+    deps: [install]
+    cmds:
+      - poetry run ruff check src/
+
+  format:
+    desc: Auto-format code for consistency
+    deps: [install]
+    cmds:
+      - poetry run ruff format src/
+
+  run:
+    desc: Launch the application locally
+    deps: [install]
+    cmds:
+      - poetry run python -m {{.PROJECT_NAME}}
+
+  verify:
+    desc: Run the full verification suite (tests + lint + import check)
+    deps: [install]
+    cmds:
+      - poetry run pytest tests/ -q
+      - poetry run ruff check src/
+      - cmd: poetry run python -c "import research_agents; print('Package OK')"
+      - cmd: poetry run python -m research_agents
+
+  ci:
+    desc: Simulate full CI pipeline locally
+    cmds:
+      - task clean
+      - task install
+      - task lint
+      - task test
+      - task verify
