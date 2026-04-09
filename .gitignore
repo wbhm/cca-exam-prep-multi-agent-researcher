@@ -42,5 +42,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Claude Code session data
-.claude/
+# Claude Code session data (but keep CLAUDE.md and .claude/ config)
+!CLAUDE.md
+!.claude/
