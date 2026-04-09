@@ -43,6 +43,18 @@ poetry run pytest
 poetry run jupyter lab
 ```
 
+## Deep-Dive Tutorial
+
+For a complete code walkthrough that explains every module, model, and design decision, see **[docs/tutorial.md](docs/tutorial.md)**. The tutorial covers:
+
+- All Pydantic models (`SubTask`, `ResearchReport`, `ConflictRecord`, `ToolErrorResponse`)
+- All 4 simulated services and the `ServiceContainer` dependency injection pattern
+- Tool definitions with negative-bound descriptions and the dispatch registry
+- The agent loop, context builder, and coordinator orchestration
+- All 3 anti-patterns with explanations of *why* they fail
+- MCP primitives classification (Tools, Resources, Prompts)
+- End-to-end data flow through the complete 6-step coordinator pipeline
+
 ## Architecture: What the Code Teaches
 
 ### The Hub-and-Spoke Pattern (CCA Architecture Domain)
@@ -125,10 +137,12 @@ src/research_agents/
   data/
     sources.py              # Pre-built data with contradictions + errors
     scenarios.py            # 3 research scenarios with expected outcomes
-notebooks/                  # 9 teaching notebooks (00-08)
+notebooks/                  # 9 teaching notebooks (00-08) with interleaved tutorials
 tests/                      # 180 tests: models, services, tools, agent, notebooks
 scripts/
   generate_notebooks.py     # Programmatic notebook generation via nbformat
+docs/
+  tutorial.md               # Complete code walkthrough (all modules + anti-patterns)
 ```
 
 ## Testing
