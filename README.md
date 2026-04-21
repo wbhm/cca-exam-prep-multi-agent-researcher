@@ -43,6 +43,13 @@ poetry run pytest
 poetry run jupyter lab
 ```
 
+## Reading Guides
+
+Two tutorials serve different audiences:
+
+- **[TUTORIAL.md](TUTORIAL.md)** -- *notebook-oriented reading guide*. Start here if you are studying for the exam. Three study tracks (4-6 hrs / 90 min / reference), a per-notebook walkthrough with key cells, the three exam walkthrough questions, and a 15-item study checklist.
+- **[docs/tutorial.md](docs/tutorial.md)** -- *code-oriented deep-dive*. Start here if you want to understand every module, model, and design decision. 16 sections organized by package module.
+
 ## Deep-Dive Tutorial
 
 For a complete code walkthrough that explains every module, model, and design decision, see **[docs/tutorial.md](docs/tutorial.md)**. The tutorial covers:
@@ -164,6 +171,45 @@ This is Article 4 of the CCA Exam Prep series by [Rick Hightower](https://medium
 4. **Multi-Agent Research** -- Hub-and-spoke, context isolation, tool scoping (this project)
 5. **CI/CD with Claude Code** -- Headless flags, pipeline patterns
 6. **Structured Data Extraction** -- JSON schema enforcement, validation loops
+
+## Article-to-Code Mapping
+
+This codebase is the hands-on companion to the article [CCA Exam Prep: Mastering the Multi-Agent Research System Scenario](https://pub.towardsai.net/cca-exam-prep-mastering-the-multi-agent-research-system-scenario-aa0c446a5e7d). Every major section of the article maps to runnable code, a notebook demo, and test coverage:
+
+| Article Section | Code Module | Notebook | Anti-Pattern | Tests |
+|---|---|---|---|---|
+| Hub-and-Spoke Architecture | `agent/coordinator.py` | `01_hub_and_spoke` | -- | `test_coordinator.py` |
+| Context Isolation | `agent/context_builder.py` | `02_context_isolation` | `shared_context.py` | `test_context_isolation.py` |
+| The Super Agent Anti-Pattern | `tools/definitions.py`, `agent/subagents.py` | `03_tool_scoping` | `super_agent.py` | `test_anti_patterns.py`, `test_tools.py` |
+| Silent Subagent Failures | `models/errors.py`, `tools/handlers.py` | `04_error_handling` | `silent_failures.py` | `test_error_handling.py` |
+| Task Decomposition Strategies | `agent/coordinator.py` (`sort_tasks_into_waves`) | `05_task_decomposition` | -- | `test_coordinator.py` |
+| Validation and Conflict Resolution | `agent/conflict_resolver.py` | `06_conflict_resolution` | -- | `test_conflict_resolver.py` |
+| MCP Primitives (Tools, Resources, Prompts) | `tools/definitions.py` | `07_mcp_primitives` | -- | `test_tools.py` |
+| End-to-End Integration | All modules | `08_integration` | All 3 anti-patterns | All test files |
+
+### Exam Questions in Code
+
+The article walks through three representative exam questions. Each one maps to specific test assertions in this codebase:
+
+**Question 1 -- Context Isolation** ("subagent returns incorrect citation formatting"):
+- Correct answer demonstrated in `test_context_isolation.py`: `build_subagent_context()` returns only explicitly passed content; coordinator messages are structurally unreachable.
+- Anti-pattern shown in `shared_context.py`: `run_leaky_subagent()` passes the coordinator's full message history, wasting tokens and polluting attention.
+
+**Question 2 -- Tool Overload** ("agent with 18 tools selects the wrong one"):
+- Correct answer demonstrated in `test_tools.py`: each agent type has exactly 4 focused tools with negative-bound descriptions ("does NOT...").
+- Anti-pattern shown in `super_agent.py`: `SUPER_AGENT_TOOLS` combines all 20 tools into one list. `test_anti_patterns.py` verifies the count exceeds 18.
+
+**Question 3 -- Silent Failure** ("critical source missing from report after API timeout"):
+- Correct answer demonstrated in `test_error_handling.py`: `ToolErrorResponse` includes `error_type`, `retry_eligible`, `fallback_available`, and `source` -- giving the coordinator a decision tree.
+- Anti-pattern shown in `silent_failures.py`: returns `{"status":"success","data":null}`, making failures indistinguishable from empty results.
+
+### Discussion Questions and the Notebooks
+
+The article's discussion questions can be explored hands-on using the notebooks:
+
+1. **"Why is hub-and-spoke coordination overhead lower than the super agent attention tax?"** -- Run `03_tool_scoping.ipynb` to see the tool count comparison and the `compare_results()` output showing selection accuracy differences.
+2. **"What error response fields let you audit past runs for silent failures?"** -- Run `04_error_handling.ipynb` to compare `ToolErrorResponse` fields against the silent `{"status":"success","data":null}` response side-by-side.
+3. **"What fields allow the coordinator to retry vs. escalate vs. skip?"** -- The `ToolErrorResponse` model in `models/errors.py` has exactly these fields: `retry_eligible` (retry timeouts), `error_type` (escalate parse failures), `fallback_available` (skip permanently unavailable sources).
 
 ## Recommended Study Resources
 

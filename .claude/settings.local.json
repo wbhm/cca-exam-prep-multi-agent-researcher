@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Bash(python3:*)",
+      "Bash(poetry install:*)",
+      "Bash(poetry run:*)",
+      "Bash(git init:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git commit:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(git remote:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(grep -E \"^d|\\\\.py$|\\\\.ipynb$\")",
+      "Bash(ls -1 /Users/richardhightower/clients/spillwave/src/cca_exam/research_multi_agent/notebooks/*.ipynb)",
+      "Bash(xargs -I {} basename {})"
+    ]
+  }
+}
