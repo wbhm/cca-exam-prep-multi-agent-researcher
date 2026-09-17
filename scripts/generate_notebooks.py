@@ -1929,8 +1929,16 @@ def gen_08() -> nbformat.NotebookNode:
             own scoped set.
 
             ```python
-            def run_coordinator(client, services, tasks, model, max_iterations, dispatch_fn):
+            def run_coordinator(
+                client: object,
+                services: ServiceContainer,
+                tasks: list[SubTask],
+                model: str = "claude-sonnet-4-6",
+                max_iterations: int = 10,
+                dispatch_fn: DispatchFn = dispatch,
+            ) -> tuple[dict[str, AgentResult], list[list[SubTask]]]:
                 waves = sort_tasks_into_waves(tasks)
+                results = {}
                 for wave in waves:
                     for task in wave:
                         config = SUBAGENT_CONFIGS[task.agent_type]
