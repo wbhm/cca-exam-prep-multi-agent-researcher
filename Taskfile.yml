@@ -31,12 +31,11 @@ tasks:
       - poetry install --with notebooks
     sources:
       - pyproject.toml
-      - poetry.lock
     generates:
       - .venv/**/*
 
   check-key:
-    desc: Verify ANTHROPIC_API_KEY is set
+    desc: Verify ANTHROPIC_API_KEY is set (optional; no notebook or test needs it)
     silent: true
     cmds:
       - |
@@ -61,13 +60,13 @@ tasks:
 
   setup:
     desc: Run the setup notebook to verify your environment
-    deps: [install, check-key]
+    deps: [install]
     cmds:
       - poetry run jupyter lab "{{.SETUP_NOTEBOOK}}"
 
   notebook:
     desc: Launch Jupyter Lab (general use)
-    deps: [install, check-key]
+    deps: [install]
     cmds:
       - poetry run jupyter lab
 
