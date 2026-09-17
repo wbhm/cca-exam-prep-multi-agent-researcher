@@ -46,7 +46,14 @@ def print_usage(response: object, model: str = "claude-sonnet-4-6") -> None:
 
 
 def compare_results(anti_result: dict, correct_result: dict) -> None:
-    """Print side-by-side comparison table of anti-pattern vs correct results."""
+    """Print side-by-side comparison table of anti-pattern vs correct results.
+
+    Boolean rows are labelled ``FIXED`` when the correct value is True and
+    ``REGRESSED`` when it is False, so every boolean metric must be phrased as
+    a property the correct pattern should have (``free_of_leaks``, not
+    ``contains_leaks``). Values must be measured from a run, never literals;
+    ``tests/test_notebooks.py`` enforces both rules.
+    """
     all_keys = sorted(set(list(anti_result.keys()) + list(correct_result.keys())))
 
     print(f"{'Metric':<30} {'Anti-Pattern':>15} {'Correct':>15} {'Delta':>15}")

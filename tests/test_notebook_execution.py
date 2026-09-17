@@ -44,17 +44,23 @@ def _execute_cells(cells: list[str], notebook_name: str) -> None:
     namespace: dict = {}
     exec(f"import sys; sys.path.insert(0, '{PROJECT_ROOT}')", namespace)
     exec(f"import sys; sys.path.insert(0, '{NOTEBOOKS_DIR}')", namespace)
-    exec(f"import os; os.chdir('{NOTEBOOKS_DIR}')", namespace)
 
-    for i, cell in enumerate(cells):
-        try:
-            exec(cell, namespace)
-        except Exception as e:
-            pytest.fail(
-                f"Notebook {notebook_name}, cell {i} failed:\n"
-                f"  Error: {type(e).__name__}: {e}\n"
-                f"  Cell source:\n{cell[:200]}"
-            )
+    # Notebooks run with the notebooks/ directory as cwd; restore it afterwards
+    # so the chdir does not leak into the rest of the test session.
+    previous_cwd = os.getcwd()
+    os.chdir(NOTEBOOKS_DIR)
+    try:
+        for i, cell in enumerate(cells):
+            try:
+                exec(cell, namespace)
+            except Exception as e:
+                pytest.fail(
+                    f"Notebook {notebook_name}, cell {i} failed:\n"
+                    f"  Error: {type(e).__name__}: {e}\n"
+                    f"  Cell source:\n{cell[:200]}"
+                )
+    finally:
+        os.chdir(previous_cwd)
 
 
 # --- Headless execution for non-API notebooks ---

@@ -11,6 +11,8 @@ Mirrors the sibling project's test_notebooks.py pattern.
 
 from __future__ import annotations
 
+import importlib.util
+import re
 from pathlib import Path
 
 import nbformat
@@ -171,3 +173,151 @@ class TestNotebookMetrics:
         """NB08 must report gaps (unavailable sources)."""
         code = _get_code_source(_read_nb("08_integration.ipynb"))
         assert "gaps" in code
+
+
+# --- Fixed constructs present, broken constructs absent ---
+#
+# Each notebook used to assert its conclusion (literal True/False in the
+# comparison table) or tell a story the cells did not execute. These tests pin
+# the repaired shape: the demonstration must be measured, and the old shortcut
+# must not creep back in.
+
+class TestNotebookDemonstrationsAreMeasured:
+    def test_00_loads_dotenv_before_reading_key(self):
+        nb = _read_nb("00_setup.ipynb")
+        key_cells = [c.source for c in nb.cells if c.cell_type == "code" and "ANTHROPIC_API_KEY" in c.source]
+        assert key_cells and all("load_dotenv" in c for c in key_cells)
+        md = _get_markdown_text(nb)
+        assert "mock mode" not in md.lower()
+
+    def test_01_shows_why_sideways_calls_fail(self):
+        code = _get_code_source(_read_nb("01_hub_and_spoke.ipynb"))
+        assert "dataclasses.fields(ServiceContainer)" in code
+        assert "sideways_call_refused" in code
+
+    def test_02_replays_leaky_subagent_through_real_loop(self):
+        code = _get_code_source(_read_nb("02_context_isolation.ipynb"))
+        assert "run_leaky_subagent(" in code, "anti-pattern must be executed, not inlined"
+        assert "client.calls[0]" in code, "metrics must be read from what was sent"
+        assert "'contains_coordinator_reasoning': True" not in code
+        assert "free_of_coordinator_reasoning" in code
+
+    def test_02_shows_the_forgot_to_forward_case(self):
+        code = _get_code_source(_read_nb("02_context_isolation.ipynb"))
+        assert "forgot_context" in code
+
+    def test_03_replays_out_of_scope_call_through_both_routers(self):
+        nb = _read_nb("03_tool_scoping.ipynb")
+        code = _get_code_source(nb)
+        assert "super_agent_dispatch" in code
+        assert "out_of_scope_call_blocked" in code
+        assert "'tools_per_agent': 4" not in code
+        assert "total_tools" not in code
+        assert "20" in _get_markdown_text(nb), "super agent has 20 tools, say so"
+
+    def test_04_executes_the_cascade(self):
+        code = _get_code_source(_read_nb("04_error_handling.ipynb"))
+        assert "silent_dispatch" in code
+        assert "collect_gaps" in code or "build_research_report" in code
+        assert "'coordinator_can_retry': False" not in code
+        assert "gaps_reported" in code
+
+    def test_05_compares_wave_counts(self):
+        nb = _read_nb("05_task_decomposition.ipynb")
+        assert "wave_count" in _get_code_source(nb)
+        assert "4x" not in _get_markdown_text(nb)
+
+    def test_06_has_first_result_wins_anti_pattern(self):
+        nb = _read_nb("06_conflict_resolution.ipynb")
+        code = _get_code_source(nb)
+        assert "first_result_wins" in code
+        assert "winning_side" in code
+        assert "order_independent" in code
+        assert "Sum reliability" not in _get_markdown_text(nb)
+
+    def test_07_uses_spec_vocabulary_and_calls_the_resources(self):
+        nb = _read_nb("07_mcp_primitives.ipynb")
+        src = _get_all_source(nb)
+        assert "VerificationResult" not in src
+        assert "resource://" not in src
+        assert "application" in _get_markdown_text(nb).lower()
+        code = _get_code_source(nb)
+        for call in ("get_source_reliability(", "list_documents(", "get_schema(", "dispatch("):
+            assert call in code, f"NB07 must execute {call}"
+
+    def test_08_derives_gaps_and_conflicts_from_tool_results(self):
+        code = _get_code_source(_read_nb("08_integration.ipynb"))
+        assert "scripted_client" in code
+        assert "collect_gaps" in code
+        assert "flag_conflict" in code
+        assert "winning_side" in code
+        assert "gaps=[" not in code, "gaps must come from tool errors, not a literal"
+
+    @pytest.mark.parametrize("name", EXPECTED_NOTEBOOKS)
+    def test_no_notebook_imports_from_tests_package(self, name):
+        assert "from tests." not in _get_code_source(_read_nb(name))
+
+    @pytest.mark.parametrize("name", EXPECTED_NOTEBOOKS)
+    def test_no_notebook_calls_the_api(self, name):
+        code = _get_code_source(_read_nb(name))
+        statements = "\n".join(
+            line for line in code.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "anthropic.Anthropic(" not in statements
+        assert "import anthropic" not in statements
+
+
+# --- compare_results hygiene ---
+
+_COMPARE_CALL = re.compile(r"compare_results\((.*?)\n\s*\)", re.DOTALL)
+_BOOL_LITERAL = re.compile(r"'[a-z_]+':\s*(True|False)\b")
+_NEGATIVE_KEY = re.compile(r"'(contains_|leaks_|missing_|lacks_|silent_)[a-z_]*':")
+
+
+class TestCompareResultsHygiene:
+    """Boolean rows must be measured and positively phrased.
+
+    ``compare_results`` labels a bool change FIXED when the correct value is
+    True, so a metric named for the defect ("contains_reasoning") prints
+    REGRESSED when the fix works. And a literal True/False is an assertion
+    dressed as a measurement.
+    """
+
+    @pytest.mark.parametrize("name", EXPECTED_NOTEBOOKS)
+    def test_no_literal_bools_in_comparisons(self, name):
+        code = _get_code_source(_read_nb(name))
+        for call in _COMPARE_CALL.findall(code):
+            assert not _BOOL_LITERAL.search(call), f"{name}: literal bool in compare_results: {call[:120]}"
+
+    @pytest.mark.parametrize("name", EXPECTED_NOTEBOOKS)
+    def test_no_defect_phrased_bool_keys(self, name):
+        code = _get_code_source(_read_nb(name))
+        for call in _COMPARE_CALL.findall(code):
+            assert not _NEGATIVE_KEY.search(call), f"{name}: defect-phrased metric key in {call[:120]}"
+
+
+# --- Generator sync ---
+
+def _load_generator():
+    spec = importlib.util.spec_from_file_location(
+        "generate_notebooks", Path(__file__).parent.parent / "scripts" / "generate_notebooks.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _shape(nb: nbformat.NotebookNode) -> list[tuple]:
+    return [
+        (c.cell_type, c.source, tuple(c.get("metadata", {}).get("tags", [])))
+        for c in nb.cells
+    ]
+
+
+@pytest.mark.parametrize("name", EXPECTED_NOTEBOOKS)
+def test_notebooks_match_generator(name):
+    """The committed notebook must equal what scripts/generate_notebooks.py produces."""
+    generated = _load_generator().build_all()[name]
+    assert _shape(_read_nb(name)) == _shape(generated), (
+        f"{name} drifted from the generator; run scripts/generate_notebooks.py"
+    )
