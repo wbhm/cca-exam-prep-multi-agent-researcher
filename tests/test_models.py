@@ -109,6 +109,18 @@ class TestConflictRecord:
             confidence=0.8,
         )
         assert c.resolution == "majority"
+        assert c.winning_side == "undecided"  # default until the resolver decides
+
+    def test_winning_side_recorded(self):
+        c = ConflictRecord(
+            claim="test claim",
+            sources_for=["src1"],
+            sources_against=["src2"],
+            resolution="highest_reliability",
+            confidence=0.8,
+            winning_side="against",
+        )
+        assert c.winning_side == "against"
 
 
 # --- ResearchReport ---

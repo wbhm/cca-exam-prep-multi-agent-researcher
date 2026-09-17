@@ -112,6 +112,7 @@ class ConflictRecord(BaseModel):
     sources_against: list[str]  # source URLs that contradict the claim
     resolution: str  # "majority", "highest_reliability", "flagged_for_human"
     confidence: float = Field(ge=0.0, le=1.0)
+    winning_side: str = "undecided"  # "for", "against", or "undecided" (flagged for human)
 
 
 class ResearchReport(BaseModel):

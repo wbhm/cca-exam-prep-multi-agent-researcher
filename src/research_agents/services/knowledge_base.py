@@ -7,6 +7,7 @@ Used by the fact_checker subagent to verify claims from other subagents.
 from __future__ import annotations
 
 from research_agents.models.research import FactRecord, SourceReliability
+from research_agents.services.reliability import match_reliability
 
 
 class KnowledgeBase:
@@ -30,15 +31,8 @@ class KnowledgeBase:
         ]
 
     def get_source_reliability(self, url: str) -> SourceReliability:
-        """Look up the reliability rating for a source URL."""
-        # Check exact match first
-        if url in self._source_reliability:
-            return self._source_reliability[url]
-        # Check domain match
-        for known_url, reliability in self._source_reliability.items():
-            if known_url in url or url in known_url:
-                return reliability
-        return SourceReliability.UNKNOWN
+        """Look up the reliability rating for a source URL (exact, then domain match)."""
+        return match_reliability(url, self._source_reliability)
 
     @property
     def fact_count(self) -> int:

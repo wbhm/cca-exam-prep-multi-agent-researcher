@@ -28,19 +28,78 @@ class TestResolveConflict:
         assert record.confidence > 0.5
 
     def test_majority_consensus(self):
-        """Strategy 2: When reliability is tied, majority wins."""
+        """Strategy 2: When the best tier on each side is equal, majority count wins."""
         record = resolve_conflict(
             claim="Remote work boosts productivity",
-            sources_for=["https://reuters.com", "https://news.example.com"],
+            sources_for=["https://reuters.com", "https://news.example.com", "https://ap.example.com"],
             sources_against=["https://blog.example.com"],
             reliability_lookup={
                 "https://reuters.com": SourceReliability.MEDIUM,
-                "https://news.example.com": SourceReliability.LOW,
-                "https://blog.example.com": SourceReliability.LOW,
+                "https://news.example.com": SourceReliability.MEDIUM,
+                "https://ap.example.com": SourceReliability.MEDIUM,
+                "https://blog.example.com": SourceReliability.MEDIUM,
             },
         )
-        # reuters(2) + news(1) = 3 vs blog(1) = 1 → reliability wins
+        # All MEDIUM → tiers tie → 3 of 4 agree → majority, confidence 0.75
+        assert record.resolution == "majority"
+        assert record.confidence == 0.75
+        assert record.winning_side == "for"
+
+    def test_majority_can_favour_against(self):
+        """2 HIGH for vs 3 HIGH against → majority, against wins, 3/5 = 0.6."""
+        lookup = {f"https://s{i}.gov": SourceReliability.HIGH for i in range(5)}
+        record = resolve_conflict(
+            claim="Claim",
+            sources_for=["https://s0.gov", "https://s1.gov"],
+            sources_against=["https://s2.gov", "https://s3.gov", "https://s4.gov"],
+            reliability_lookup=lookup,
+        )
+        assert record.resolution == "majority"
+        assert record.confidence == 0.6
+        assert record.winning_side == "against"
+
+    def test_many_low_sources_do_not_outrank_one_high(self):
+        """Tier comparison: three blogs never tie a single .gov source."""
+        record = resolve_conflict(
+            claim="Claim",
+            sources_for=["https://b1.example.com", "https://b2.example.com", "https://b3.example.com"],
+            sources_against=["https://energy.gov"],
+            reliability_lookup={
+                "https://b1.example.com": SourceReliability.LOW,
+                "https://b2.example.com": SourceReliability.LOW,
+                "https://b3.example.com": SourceReliability.LOW,
+                "https://energy.gov": SourceReliability.HIGH,
+            },
+        )
         assert record.resolution == "highest_reliability"
+        assert record.winning_side == "against"
+        assert record.confidence == 0.8  # tier gap 2 → 0.5 + 2 * 0.15
+
+    def test_domain_keyed_lookup_matches_full_urls(self):
+        """Reliability data keyed by domain must apply to full source URLs."""
+        record = resolve_conflict(
+            claim="Renewable energy is 30%",
+            sources_for=["https://energy.gov/renewable-2024"],
+            sources_against=["https://energyblog.example.com/renewables"],
+            reliability_lookup={
+                "energy.gov": SourceReliability.HIGH,
+                "energyblog.example.com": SourceReliability.LOW,
+            },
+        )
+        assert record.resolution == "highest_reliability"
+        assert record.winning_side == "for"
+
+    def test_swapping_sides_flips_winner_only(self):
+        """Deterministic: the same evidence yields the same verdict regardless of list order."""
+        lookup = {
+            "https://energy.gov": SourceReliability.HIGH,
+            "https://blog.example.com": SourceReliability.LOW,
+        }
+        a = resolve_conflict("c", ["https://energy.gov"], ["https://blog.example.com"], lookup)
+        b = resolve_conflict("c", ["https://blog.example.com"], ["https://energy.gov"], lookup)
+        assert (a.resolution, a.confidence) == (b.resolution, b.confidence)
+        assert a.winning_side == "for"
+        assert b.winning_side == "against"
 
     def test_true_majority_when_scores_equal(self):
         """When reliability scores are exactly equal, majority count wins."""
@@ -68,6 +127,7 @@ class TestResolveConflict:
         # Both MEDIUM (score 2 each), both 1 source → flagged
         assert record.resolution == "flagged_for_human"
         assert record.confidence <= 0.5
+        assert record.winning_side == "undecided"
 
     def test_confidence_increases_with_score_gap(self):
         """Larger reliability gap → higher confidence."""
@@ -98,6 +158,11 @@ class TestResolveConflicts:
         assert len(records) == 2
         assert records[0].resolution == "highest_reliability"
         assert records[1].resolution == "flagged_for_human"
+
+    def test_missing_claim_key_does_not_raise(self):
+        records = resolve_conflicts([{"sources_for": ["https://energy.gov"]}], RELIABILITY)
+        assert len(records) == 1
+        assert records[0].claim == ""
 
     def test_empty_conflicts(self):
         records = resolve_conflicts([], RELIABILITY)
