@@ -212,3 +212,44 @@ def test_every_public_function_is_quoted() -> None:
 )
 def test_quoted_signature_matches_source(name: str, header: str) -> None:
     assert _doc_params(header) == _real_params(PUBLIC[name]), header
+
+
+# --- quoted signatures in notebook markdown -----------------------------------
+
+NOTEBOOKS = sorted((ROOT / "notebooks").glob("0*.ipynb"))
+
+# Anti-pattern sketches the notebooks quote on purpose; they exist nowhere in the package.
+PSEUDOCODE = {"run_web_researcher"}
+
+
+def _notebook_quoted_defs() -> list[tuple[str, str, str]]:
+    """(notebook name, function name, header) for every def quoted in a markdown cell."""
+    import nbformat
+
+    found = []
+    for path in NOTEBOOKS:
+        nb = nbformat.read(path, as_version=4)
+        for cell in nb.cells:
+            if cell.cell_type != "markdown":
+                continue
+            for name, header in _quoted_defs(cell.source):
+                found.append((path.name, name, header))
+    return found
+
+
+def test_every_notebook_quoted_def_is_a_known_function() -> None:
+    unknown = {
+        (nb, name)
+        for nb, name, _ in _notebook_quoted_defs()
+        if name not in PUBLIC and name not in PSEUDOCODE
+    }
+    assert unknown == set(), f"notebooks quote functions the test cannot check: {unknown}"
+
+
+@pytest.mark.parametrize(
+    ("notebook", "name", "header"),
+    [(nb, n, h) for nb, n, h in _notebook_quoted_defs() if n in PUBLIC],
+    ids=lambda v: v if isinstance(v, str) and "\n" not in v else "",
+)
+def test_notebook_quoted_signature_matches_source(notebook: str, name: str, header: str) -> None:
+    assert _doc_params(header) == _real_params(PUBLIC[name]), f"{notebook}: {header}"
