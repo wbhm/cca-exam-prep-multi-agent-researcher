@@ -41,21 +41,26 @@ src/research_agents/
   data/            Pre-built data with contradictions + error triggers
   tools/           Claude API tool schemas + per-agent-type handlers
   agent/           Coordinator, agent loop, context builder, conflict resolver
-  anti_patterns/   3 deliberately wrong implementations
+  anti_patterns/   3 deliberately wrong implementations, each runnable through the loop
+  testing.py       Scripted client: replay a fixed transcript through the real loop
 ```
 
 The data flows like this:
 
 ```
 Research query
-  -> coordinator.py decomposes into SubTasks with depends_on fields
+  -> the caller decomposes it into SubTasks with depends_on fields
   -> sort_tasks_into_waves() topologically sorts into parallel waves
   -> for each wave: context_builder.py builds EXPLICIT context string
-  -> run_agent_loop() calls Claude API with SCOPED tools per agent type
+  -> run_agent_loop() calls the client with SCOPED tools per agent type
+     and logs every tool call and its JSON result
   -> handlers.py dispatches tool calls via DISPATCH[agent_type][tool_name]
   -> conflict_resolver.py resolves contradictions DETERMINISTICALLY
+  -> collect_gaps() turns structured tool errors into report gaps
   -> build_research_report() compiles findings, conflicts, gaps
 ```
+
+No notebook or test calls the Claude API. `research_agents/testing.py` provides `scripted_client()`, which replays a list of pre-written model responses (`text_turn`, `tool_turn`) through the real loop, so the dispatch, tool results, message history and stop reasons are all genuine while the model's turns are fixed. Replaying one transcript through two routers is how every anti-pattern in this project is demonstrated.
 
 Every layer enforces a CCA principle:
 
@@ -65,7 +70,7 @@ Every layer enforces a CCA principle:
 | Services | Simulated business logic -- deterministic, in-memory |
 | Tools | Exactly 4 focused tools per agent with negative-bound descriptions |
 | Context Builder | Structural isolation -- coordinator messages are never a function parameter |
-| Agent Loop | Stop-reason-driven loop (never checks content block types) |
+| Agent Loop | Stop-reason-driven loop (control flow branches on `stop_reason`, not on block types) |
 | Coordinator | Hub-and-spoke -- subagents talk only to coordinator, never to each other |
 | Conflict Resolver | Programmatic enforcement -- deterministic rules, not LLM judgment |
 
@@ -108,7 +113,7 @@ class SubTask(BaseModel):
     agent_type: str         # "web_researcher", "document_analyzer", etc.
     instruction: str        # What to do
     context: str            # Explicitly passed context (NOT inherited)
-    depends_on: list[str]   # task_ids for sequential ordering
+    depends_on: list[str] = Field(default_factory=list)  # task_ids for sequential ordering
 ```
 
 This is the most important model in the system. Each field maps directly to a CCA concept:
@@ -145,14 +150,14 @@ These are the output types from the web search service. `SearchResult` is what c
 class Document(BaseModel):
     doc_id: str
     title: str
-    sections: list[DocumentSection]
-    citations: list[str]
+    sections: list[DocumentSection] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
     reliability: SourceReliability = SourceReliability.MEDIUM
 
 class DocumentSection(BaseModel):
     heading: str
     content: str
-    claims: list[str]  # Extractable factual claims
+    claims: list[str] = Field(default_factory=list)  # Extractable factual claims
 ```
 
 Documents are research papers with internal structure. The `claims` field on each section is key -- these are the factual statements that the fact checker agent verifies. Some claims in the test data deliberately contradict each other to trigger conflict resolution.
@@ -178,10 +183,10 @@ class SourceResult(BaseModel):
     title: str
     content_summary: str
     reliability: SourceReliability
-    claims: list[str]
+    claims: list[str] = Field(default_factory=list)
 ```
 
-The aggregated output from a single source, used in the final report. This is what the coordinator produces after processing subagent results.
+The aggregated output from a single source, used in the final report. In this package `build_research_report()` produces one per subagent transcript (`source_url="agent:<task_id>"`, reliability stamped `HIGH`), not one per underlying web source; the per-source ratings live in the conflict records.
 
 ### ConflictRecord
 
@@ -191,24 +196,25 @@ class ConflictRecord(BaseModel):
     sources_for: list[str]       # Source URLs that support the claim
     sources_against: list[str]   # Source URLs that contradict the claim
     resolution: str              # "majority", "highest_reliability", "flagged_for_human"
-    confidence: float            # 0.0 to 1.0
+    confidence: float = Field(ge=0.0, le=1.0)
+    winning_side: str = "undecided"  # "for", "against", or "undecided"
 ```
 
-A documented contradiction between sources, with resolution metadata. The `resolution` field records *which strategy* was used (reliability ranking, majority vote, or human flag). The `confidence` field reflects how certain the resolution is. This is one of the key CCA concepts: the coordinator must resolve contradictions using **deterministic strategies**, not LLM judgment.
+A documented contradiction between sources, with resolution metadata. The `resolution` field records *which strategy* was used (reliability ranking, majority vote, or human flag). `winning_side` records *which way* it went; without it a consumer could not tell whether the claim was upheld. The `confidence` field reflects how certain the resolution is. This is one of the key CCA concepts: the coordinator must resolve contradictions using **deterministic strategies**, not LLM judgment.
 
 ### ResearchReport
 
 ```python
 class ResearchReport(BaseModel):
     query: str
-    findings: list[SourceResult]
-    conflicts: list[ConflictRecord]
+    findings: list[SourceResult] = Field(default_factory=list)
+    conflicts: list[ConflictRecord] = Field(default_factory=list)
     synthesis: str = ""
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    gaps: list[str]  # Sources that failed/were unavailable
+    gaps: list[str] = Field(default_factory=list)  # sources that failed/were unavailable
 ```
 
-The final output of the coordinator. The `gaps` field is critical -- it records sources that were unavailable (timeouts, errors) so the report is transparent about its limitations. A report that says "we could not reach Source X" is more trustworthy than one that silently omits it.
+The final output of the coordinator. The `gaps` field is critical -- it records sources that were unavailable (timeouts, errors) so the report is transparent about its limitations. `build_research_report()` derives it from the subagents' structured tool errors (Section 10), never from the model's prose. A report that says "we could not reach Source X" is more trustworthy than one that silently omits it.
 
 ---
 
@@ -294,15 +300,16 @@ class KnowledgeBase:
         self._source_reliability = source_reliability
 
     def lookup_fact(self, claim: str) -> list[FactRecord]:
-        # Keyword matching against known facts
+        # Facts scored by shared words, closest match first
         ...
 
     def get_source_reliability(self, url: str) -> SourceReliability:
-        # Exact match, then domain match, then UNKNOWN
-        ...
+        return match_reliability(url, self._source_reliability)
 ```
 
-The knowledge base serves two purposes: fact verification and source reliability scoring. The `lookup_fact` method uses keyword matching (any word in the fact's claim that appears in the query). The `get_source_reliability` method checks exact URL match first, then domain-level match, then returns `UNKNOWN`.
+The knowledge base serves two purposes: fact verification and source reliability scoring. `lookup_fact` scores every stored fact by how many of its words (three or more characters) appear in the claim and returns matches by descending overlap. The ranking matters: the verified "30% renewable" record and the debunked "45% renewable" record share most of their words, and a fact checker that simply took the highest-confidence match would certify the debunked claim as true. `handle_verify_claim` takes the first match.
+
+`get_source_reliability` delegates to `services/reliability.match_reliability()`: exact URL match first, then domain match (`"energy.gov"` matches `"https://energy.gov/renewable-2024"`), then `UNKNOWN`. The conflict resolver uses the same function, so the domain-keyed `SOURCE_RELIABILITY_RATINGS` can be passed straight into `resolve_conflict()`.
 
 ### ServiceContainer -- Dependency Injection
 
@@ -318,6 +325,8 @@ class ServiceContainer:
 A frozen dataclass holding all four services. `frozen=True` means you cannot reassign fields after construction -- the container is immutable. Every tool handler receives this single object and accesses exactly the services it needs. Services are never imported directly in tool modules.
 
 This is dependency injection. If you want to swap `WebSearchService` for a real API client in production, you construct a different `ServiceContainer`. The tool handlers don't change.
+
+`make_default_services()` in the same module builds a fresh container over the seed data in `data/sources.py`. The notebooks and the test fixture both use it.
 
 ---
 
@@ -388,10 +397,13 @@ SOURCE_RELIABILITY_RATINGS = {
     "energyblog.example.com": SourceReliability.LOW,
     "healthtech.example.com": SourceReliability.LOW,
     "workfromhome-blog.example.com": SourceReliability.LOW,
+    "timeout.example.com": SourceReliability.MEDIUM,
 }
 ```
 
-These ratings drive the conflict resolver's first strategy: reliability ranking.
+These ratings drive the conflict resolver's first strategy: reliability ranking. They are keyed by domain while conflicts carry full URLs; `match_reliability()` bridges the two.
+
+One quirk of `WebSearchService.search` worth knowing: an index key matches only when it appears verbatim in the query. `"remote work economic"` is a key, so a scripted `search_web` call must contain that phrase; the scenario's own query string ("...economic impact of remote work...") would return nothing.
 
 ### scenarios.py -- Pre-Defined Research Scenarios
 
@@ -532,22 +544,45 @@ DISPATCH: dict[str, dict[str, Handler]] = {
 }
 ```
 
-The dispatch is keyed by `(agent_type, tool_name)`. This means tools are isolated per agent even if names overlap. Even if two different agent types had a tool called `search`, they would route to different handler functions.
+The dispatch is a nested dict: agent type first, then tool name. A tool is reachable only through the agent that owns it, so a web researcher asking for `query_database` gets a structured `invalid_input` error rather than the database. Even if two different agent types had a tool called `search`, they would route to different handler functions.
 
 The `dispatch()` function handles routing:
 
 ```python
-def dispatch(agent_type, tool_name, input_dict, services) -> str:
+def dispatch(agent_type: str, tool_name: str, input_dict: dict, services: ServiceContainer) -> str:
     agent_handlers = DISPATCH.get(agent_type)
     if agent_handlers is None:
-        return json.dumps({...structured error...})
+        return error_response("invalid_input", "dispatch", f"Unknown agent_type: {agent_type}")
     handler = agent_handlers.get(tool_name)
     if handler is None:
-        return json.dumps({...structured error...})
+        return error_response(
+            "invalid_input", "dispatch", f"Unknown tool '{tool_name}' for agent '{agent_type}'"
+        )
     return handler(input_dict, services)
 ```
 
 Note: on dispatch errors (unknown agent type or tool name), it returns a structured error JSON string. It never raises exceptions. This is the CCA pattern: tool handlers always return JSON strings, never exceptions.
+
+`dispatch` has the signature `(agent_type, tool_name, input_dict, services) -> str`, and `run_agent_loop()` accepts any function with that signature as `dispatch_fn`. That is how the anti-pattern routers (`super_agent_dispatch`, `silent_dispatch`) are injected in the notebooks.
+
+### error_response() -- One Constructor for Every Error
+
+**File:** `src/research_agents/tools/_errors.py`
+
+```python
+def error_response(
+    error_type: str,
+    source: str,
+    message: str,
+    *,
+    retry_eligible: bool = False,
+    fallback_available: bool = False,
+    partial_data: dict | None = None,
+) -> str:
+    return ToolErrorResponse(...).model_dump_json()
+```
+
+Every handler builds its failure payload through this function, so the JSON on the wire is a serialized `ToolErrorResponse` by construction. `tests/test_error_handling.py` parses every error path back through `ToolErrorResponse.model_validate` to prove it.
 
 ### Example Handler: handle_fetch_page
 
@@ -555,38 +590,20 @@ Note: on dispatch errors (unknown agent type or tool name), it returns a structu
 def handle_fetch_page(input_dict: dict, services: ServiceContainer) -> str:
     url = input_dict.get("url", "")
     if not url:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "fetch_page",
-            "message": "URL parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response("invalid_input", "fetch_page", "URL parameter is required")
     try:
         page = services.web_search.fetch_page(url)
         return json.dumps({"status": "success", "data": page.model_dump()})
     except WebSearchTimeoutError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "timeout",
-            "source": url,
-            "message": f"Timeout fetching {url}",
-            "retry_eligible": True,        # Coordinator CAN retry
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "timeout", url, f"Timeout fetching {url}",
+            retry_eligible=True,          # Coordinator CAN retry
+        )
     except WebSearchNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": url,
-            "message": f"Page not found: {url}",
-            "retry_eligible": False,        # Don't retry 404s
-            "fallback_available": True,     # Try a different source
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found", url, f"Page not found: {url}",
+            fallback_available=True,      # Don't retry 404s; try a different source
+        )
 ```
 
 Three important patterns here:
@@ -611,22 +628,37 @@ class UsageSummary:
     input_tokens: int = 0
     output_tokens: int = 0
 
+    def add(self, usage: dict) -> None:
+        self.input_tokens += usage.get("input_tokens", 0)
+        self.output_tokens += usage.get("output_tokens", 0)
+
 @dataclass
 class AgentResult:
-    content: str              # Final text response
-    messages: list[dict]      # Full message history
-    usage: UsageSummary       # Token usage across all iterations
-    tool_calls: int = 0       # Number of tool calls made
-    iterations: int = 0       # Number of loop iterations
+    content: str                                          # final text response
+    messages: list[dict] = field(default_factory=list)    # full message history
+    usage: UsageSummary = field(default_factory=UsageSummary)
+    tool_calls: int = 0                                   # number of tool calls made
+    iterations: int = 0                                   # number of loop iterations
+    stop_reason: str = ""          # last API stop_reason, or "max_iterations" if cut off
+    tool_results: list[dict] = field(default_factory=list)  # {"tool_name", "tool_input", "result"}
 ```
 
-`AgentResult` captures everything the coordinator needs from a subagent run: the final text content, usage metrics, and the full message history (useful for debugging).
+`AgentResult` captures everything the coordinator needs from a subagent run: the final text content, usage metrics, the full message history, why the loop stopped, and a structured log of every tool call with the JSON string the handler returned. That log is what `collect_gaps()` reads (Section 10): a subagent that writes a confident summary after a timed-out fetch cannot hide the timeout, because the coordinator reads the tool result, not the prose.
 
 ### The Loop: run_agent_loop()
 
 ```python
-def run_agent_loop(client, services, user_message, system_prompt,
-                   tools, agent_type, model, max_iterations=10) -> AgentResult:
+def run_agent_loop(
+    client: object,
+    services: ServiceContainer,
+    user_message: str,
+    system_prompt: str,
+    tools: list[dict],
+    agent_type: str,
+    model: str = "claude-sonnet-4-6",
+    max_iterations: int = 10,
+    dispatch_fn: DispatchFn = dispatch,
+) -> AgentResult:
     messages = [{"role": "user", "content": user_message}]
     result = AgentResult(content="")
 
@@ -636,29 +668,34 @@ def run_agent_loop(client, services, user_message, system_prompt,
             model=model, max_tokens=4096,
             system=system_prompt, tools=tools, messages=messages,
         )
-
         messages.append({"role": "assistant", "content": response.content})
+        result.stop_reason = response.stop_reason
 
         # Stop-reason driven control flow
-        if response.stop_reason == "end_turn":
-            # Extract final text and break
+        if response.stop_reason != "tool_use":
+            # end_turn, max_tokens, stop_sequence, refusal, pause_turn, ...:
+            # extract any text and stop
             ...
-            break
+            return result
 
-        if response.stop_reason == "tool_use":
-            # Dispatch each tool call, append results, continue loop
-            ...
+        # tool_use: dispatch each call via dispatch_fn, log it in
+        # result.tool_results, append a tool_result block with is_error set
+        # when the handler returned status == "error", then continue
+        ...
 
+    result.stop_reason = "max_iterations"
     return result
 ```
 
-Key CCA pattern: **Stop-reason-driven loop**. The loop checks `response.stop_reason`, never content block types. `end_turn` exits the loop, `tool_use` dispatches tools and continues. This is the CCA-correct approach.
+Key CCA pattern: **Stop-reason-driven loop**. Control flow branches on `response.stop_reason`: `tool_use` dispatches tools and continues; every other stop reason (`end_turn`, `max_tokens`, `refusal`, `pause_turn`, ...) extracts text and exits. Block types are read only when *extracting* text or tool calls from a response, never to decide what to do next. Each `tool_result` block carries `is_error: true` when the handler returned a structured error, which is the Messages API's own signal for a failed tool call.
 
 The `user_message` parameter receives the output of `build_subagent_context()` -- a plain string containing only explicitly-selected context. The coordinator's message history is never passed here.
 
 The `tools` parameter receives the scoped tool list from `SubagentConfig.tools` -- 4 tools, not 20.
 
-The `max_iterations` parameter is a safety limit to prevent runaway loops. If the agent makes 10 iterations without reaching `end_turn`, the loop exits and returns whatever content has been accumulated.
+The `max_iterations` parameter is a safety limit to prevent runaway loops. If the agent makes 10 iterations without stopping, the loop exits with `stop_reason="max_iterations"`, and `collect_gaps()` reports that task as a gap rather than letting an empty result vanish from the report.
+
+The `dispatch_fn` parameter defaults to the scoped `dispatch` and exists so a notebook can replay one transcript through a different router. It is the seam that makes the anti-patterns runnable.
 
 ---
 
@@ -716,7 +753,9 @@ The output is a plain string with markdown headers. The subagent sees a clean, s
 
 ### Why This Matters for the CCA Exam
 
-When the exam asks "the subagent produced results that contradicted the coordinator's instructions," the answer is always that the instructions were in the coordinator's context but never explicitly forwarded. The `build_subagent_context()` pattern makes this failure mode impossible to cause accidentally -- you would have to deliberately put coordinator-only information into the `SubTask.context` field.
+When the exam asks "the subagent produced results that contradicted the coordinator's instructions," the answer is always that the instructions were in the coordinator's context but never explicitly forwarded. `build_subagent_context()` is the only way `run_coordinator()` builds subagent input, so inside the coordinator the leak cannot happen accidentally -- you would have to deliberately put coordinator-only information into the `SubTask.context` field. (`run_agent_loop()` itself accepts any string as `user_message`; that is the door the shared-context anti-pattern in Section 13 walks through.)
+
+The cut goes both ways. If the coordinator *forgets* to copy a rule such as "use APA citations" into `task.context`, the subagent never sees it and no error is raised. Notebook 02 runs that case through the loop and shows the sent message has no citation instruction; that is the exam's "subagent returned MLA" scenario in miniature.
 
 ---
 
@@ -795,9 +834,16 @@ Topological sort into parallel execution waves. Each iteration finds all tasks w
 ### run_coordinator()
 
 ```python
-def run_coordinator(client, services, tasks, model) -> tuple[dict, list]:
+def run_coordinator(
+    client: object,
+    services: ServiceContainer,
+    tasks: list[SubTask],
+    model: str = "claude-sonnet-4-6",
+    max_iterations: int = 10,
+    dispatch_fn: DispatchFn = dispatch,
+) -> tuple[dict[str, AgentResult], list[list[SubTask]]]:
     waves = sort_tasks_into_waves(tasks)
-    results = {}
+    results: dict[str, AgentResult] = {}
 
     for wave in waves:
         for task in wave:
@@ -818,6 +864,7 @@ def run_coordinator(client, services, tasks, model) -> tuple[dict, list]:
                 system_prompt=config.system_prompt,
                 tools=config.tools,
                 agent_type=task.agent_type, model=model,
+                max_iterations=max_iterations, dispatch_fn=dispatch_fn,
             )
             results[task.task_id] = result
 
@@ -829,16 +876,37 @@ This function executes Steps 2-3 of the 6-step flow. For each task:
 2. Build explicit context via `build_subagent_context()`
 3. Run the agent loop with scoped tools
 
-The `predecessor_results=results` parameter means tasks in Wave 1+ can access results from earlier waves, but only for the specific task IDs listed in `depends_on`.
+The `predecessor_results=results` parameter means tasks in Wave 1+ can access results from earlier waves, but only for the specific task IDs listed in `depends_on`. Tasks inside a wave are independent but are executed one after another; "parallel" describes the dependency structure, not concurrency.
+
+Two of the six steps have no code of their own. **PLAN** (step 1) is done by the caller, who writes the `SubTask` list; the package contains no query-decomposition code. **EVALUATE** (step 4) is a `fact_checker` SubTask that `depends_on` the others, so its `verify_claim` and `flag_conflict` tool results are what the coordinator feeds to RESOLVE.
+
+### collect_tool_errors() and collect_gaps()
+
+```python
+def collect_tool_errors(results: dict[str, AgentResult]) -> list[dict]:
+    # every tool result whose JSON has status == "error", with
+    # task_id, tool_name, error_type, source, retry_eligible, fallback_available
+
+def collect_gaps(results: dict[str, AgentResult]) -> list[str]:
+    # "<source> (<error_type>)" per tool error, plus
+    # "<task_id> (max_iterations)" for any subagent the loop cut off
+```
+
+This is where the structured-error guarantee becomes visible. Both functions walk `AgentResult.tool_results`, the loop's own log, never the model's text. A subagent whose summary says "fetched the dataset" after the fetch timed out still produces a gap, because the timeout is in the log. Replace the router with `silent_dispatch` and the same transcript produces no gap at all: the handler said `success`, so there is nothing to collect. That is the silent-failure cascade, executed rather than described (Notebooks 04 and 08).
 
 ### build_research_report()
 
 ```python
-def build_research_report(query, results, reliability_lookup,
-                          conflicts=None, gaps=None) -> ResearchReport:
+def build_research_report(
+    query: str,
+    results: dict[str, AgentResult],
+    reliability_lookup: dict[str, SourceReliability],
+    conflicts: list[dict] | None = None,
+    gaps: list[str] | None = None,
+) -> ResearchReport:
 ```
 
-Steps 5-6: resolve conflicts and compile the final report. The confidence score starts at 0.8 and is reduced by gaps (-0.1 each) and unresolved human-flagged conflicts (-0.05 each). The minimum confidence is 0.1.
+Steps 5-6: resolve conflicts and compile the final report. When `gaps` is omitted it is derived with `collect_gaps(results)`. The confidence score starts at 0.8 and is reduced by gaps (-0.1 each) and unresolved human-flagged conflicts (-0.05 each), then rounded to two decimals. The minimum confidence is 0.1.
 
 ---
 
@@ -857,35 +925,48 @@ RELIABILITY_SCORES = {
 }
 ```
 
-**Strategy 1: Source reliability ranking.** Sum the reliability scores for each side. Higher total wins. Confidence scales with the score difference:
-
 ```python
-confidence = min(0.95, 0.5 + (score_diff * 0.15))
+def _best_tier(sources: list[str], reliability_lookup: dict[str, SourceReliability]) -> int:
+    return max(
+        (RELIABILITY_SCORES[match_reliability(src, reliability_lookup)] for src in sources),
+        default=0,
+    )
 ```
 
-**Strategy 2: Majority consensus.** If reliability scores tie, the side with more sources wins:
+**Strategy 1: Source reliability ranking.** Compare the *best* tier on each side. The side whose most reliable source sits higher wins, so three blogs (best tier LOW) never outrank one `.gov` (best tier HIGH). Confidence scales with the tier gap:
 
 ```python
-confidence = min(0.85, majority_size / total)
+gap = abs(for_tier - against_tier)          # 1, 2 or 3
+confidence = min(0.95, 0.5 + gap * 0.15)    # HIGH vs LOW: gap 2 -> 0.80
+winning_side = "for" if for_tier > against_tier else "against"
 ```
 
-**Strategy 3: Flag for human review.** If both reliability and count tie:
+**Strategy 2: Majority consensus.** If the best tiers tie, the side with more sources wins:
+
+```python
+confidence = min(0.85, majority_size / total)   # 3 of 4 -> 0.75
+```
+
+**Strategy 3: Flag for human review.** If both tier and count tie:
 
 ```python
 resolution = "flagged_for_human"
 confidence = 0.3
+winning_side = "undecided"
 ```
 
-This is **programmatic enforcement** -- the same inputs always produce the same output. No LLM reasoning is involved. This is the CCA principle that code-enforced rules beat prompt-based guidance.
+This is **programmatic enforcement** -- the same inputs always produce the same output, and the output does not depend on the order the sources arrived in. No LLM reasoning is involved. This is the CCA principle that code-enforced rules beat prompt-based guidance.
 
 ### Batch Resolution
 
 ```python
-def resolve_conflicts(conflicts: list[dict],
-                      reliability_lookup: dict[str, SourceReliability]) -> list[ConflictRecord]:
+def resolve_conflicts(
+    conflicts: list[dict],
+    reliability_lookup: dict[str, SourceReliability],
+) -> list[ConflictRecord]:
 ```
 
-Processes all conflicts in a batch. Each conflict dict has `claim`, `sources_for`, and `sources_against`. Returns a list of `ConflictRecord` objects with resolution metadata.
+Processes all conflicts in a batch. Each conflict dict has `claim`, `sources_for`, and `sources_against`; missing keys default rather than raise, so a malformed conflict cannot crash `build_research_report()`. Returns a list of `ConflictRecord` objects with resolution metadata.
 
 ---
 
@@ -913,12 +994,23 @@ Use whatever tools you need to answer the research query.
 """
 ```
 
+```python
+def super_agent_dispatch(agent_type, tool_name, input_dict, services) -> str:
+    # agent_type is ignored: any caller can run any of the 20 tools
+    handler = SUPER_AGENT_DISPATCH.get(tool_name)
+    ...
+```
+
+`super_agent_dispatch` has the same signature as the scoped `dispatch`, so a notebook can inject it into `run_agent_loop()`. Notebook 03 replays one scripted `query_database` call from a web researcher through both: the super agent returns database rows, the scoped router returns a structured `invalid_input` error.
+
 ### Why This Fails
 
-When an agent has 18+ tools:
+When an agent has 18+ tools (20 here):
 - A significant portion of attention goes to evaluating tool descriptions instead of the actual task
 - Similar tools create ambiguity (e.g., `search_web` vs `cross_reference` -- both find information)
 - The generic system prompt provides no workflow guidance
+
+The first two are claims about model behaviour that this project cannot measure without a live model. What it *can* show is the structural half: with a flat tool map nothing in the code stops a wrong choice from executing, and with scoped dispatch the wrong choice is refused.
 
 The CCA exam answer is always **"decompose into specialized subagents with 4-5 tools each."** The common distractors are:
 - "improve tool descriptions" -- WRONG (doesn't fix the structural problem)
@@ -931,7 +1023,8 @@ The CCA exam answer is always **"decompose into specialized subagents with 4-5 t
 **File:** `src/research_agents/anti_patterns/shared_context.py`
 
 ```python
-def run_leaky_subagent(client, services, coordinator_messages, agent_type, model):
+def run_leaky_subagent(client, services, coordinator_messages, agent_type,
+                       model="claude-sonnet-4-6") -> AgentResult:
     config = SUBAGENT_CONFIGS.get(agent_type)
     # WRONG: dumps entire coordinator history as the user message
     leaked_context = str(coordinator_messages)
@@ -951,6 +1044,8 @@ The function takes the coordinator's full `messages` list as a parameter and con
 4. **No isolation**: The subagent sees other subagents' results
 
 Compare with `build_subagent_context()`, which structurally prevents this by not accepting the coordinator's messages as a parameter.
+
+Notebook 02 runs this function through the loop with a recording client and reads back `client.calls[0]["messages"][0]["content"]`, the message the subagent was actually sent. For a three-message coordinator history it is a 358-character Python `repr` that contains the coordinator's planning and another subagent's tool result; the explicit version of the same task is 154 characters and contains neither.
 
 ---
 
@@ -975,13 +1070,28 @@ Returns `{"status": "success", "data": null}` on every error. The coordinator ca
 
 This creates **systematic bias** in the final report -- it reflects only the sources that happened to be available, not the full picture. The report's confidence score is falsely high because it doesn't know about the gaps.
 
+```python
+def silent_dispatch(agent_type, tool_name, input_dict, services) -> str:
+    # silent handlers for search_web / fetch_page, the real dispatch for everything else
+```
+
+`silent_dispatch` lets the cascade be executed rather than described. Notebooks 04 and 08 run one scripted transcript (a web researcher that fetches the timeout URL and then writes a confident summary) through `run_coordinator()` twice. Through `dispatch` the report says `gaps=['https://timeout.example.com/remote-data (timeout)']` with confidence 0.70; through `silent_dispatch` it says `gaps=[]` with confidence 0.80. The model's prose is identical in both runs.
+
 The correct pattern (Section 6) returns structured error context with `error_type`, `retry_eligible`, `fallback_available`, and `partial_data`, giving the coordinator the information it needs to make informed decisions.
 
 ---
 
 ## 15. MCP Primitives -- Tools, Resources, and Prompts
 
-MCP (Model Context Protocol) defines three primitives for AI agent interaction:
+MCP (Model Context Protocol) defines three server primitives. The specification's strongest classification tell is *who decides to use each one*:
+
+| Primitive | Controlled by | Meaning |
+|-----------|---------------|---------|
+| **Prompts** | User | Exposed for the user to pick explicitly (slash commands, menus) |
+| **Resources** | Application | The host application decides what context to attach for the model |
+| **Tools** | Model | The model decides to call them, subject to human approval |
+
+Resources are identified by URIs. The scheme is the server's choice (`file://`, `https://`, or a custom one such as `kb://`), and the client reads one with `resources/read`. There is no special `resource://` scheme.
 
 ### Tools (Verbs) -- Things the Agent Does
 
@@ -1018,9 +1128,9 @@ Reusable message templates. In our system:
 ### The CCA Exam Distinction
 
 The most common exam mistake is classifying a **Resource** as a **Tool** because both involve "getting information." The difference:
-- **Tools** perform actions or computation (verbs)
-- **Resources** are read-only data catalogs (nouns)
-- **Prompts** are parameterized templates (patterns)
+- **Tools** perform actions or computation (verbs); the model decides to call them
+- **Resources** are read-only data catalogs (nouns); the application decides to attach them
+- **Prompts** are parameterized templates (patterns); the user decides to invoke them
 
 If a question describes a source reliability database -> **Resource**, not a Tool.
 If it describes a function that verifies a claim -> **Tool**.
@@ -1029,17 +1139,17 @@ If it describes a function that verifies a claim -> **Tool**.
 
 ## 16. How the Pieces Connect -- End-to-End Data Flow
 
-Here's the complete flow for the `economic_impact` scenario:
+Here's the complete flow for the `economic_impact` scenario, exactly as Notebook 08 executes it with scripted transcripts:
 
 ```
 ResearchQuery("What is the economic impact of remote work on productivity?")
   |
   v
-1. PLAN: Decompose into 4 SubTasks
+1. PLAN: The caller decomposes into 4 SubTasks
   |  web (web_researcher) -- no depends_on
   |  data (data_extractor) -- no depends_on
   |  docs (document_analyzer) -- no depends_on
-  |  facts (fact_checker) -- depends_on: [web, docs]
+  |  facts (fact_checker) -- depends_on: [web, data, docs]
   |
   v
 2. SORT: sort_tasks_into_waves()
@@ -1050,47 +1160,47 @@ ResearchQuery("What is the economic impact of remote work on productivity?")
 3. DELEGATE: For each task in each wave:
   |  a. SUBAGENT_CONFIGS[task.agent_type] -> SubagentConfig
   |  b. build_subagent_context(task, results) -> plain string
-  |  c. run_agent_loop(client, services, context, prompt, tools)
-  |  d. dispatch(agent_type, tool_name, input, services)
+  |  c. run_agent_loop(client, services, context, prompt, tools, dispatch_fn=dispatch)
+  |  d. dispatch(agent_type, tool_name, input, services), logged in tool_results
   |
-  |  Wave 0 tasks run against:
-  |    web: search_web("remote work") -> 4 results including contradiction
-  |         fetch_page("https://mckinsey.com/...") -> +13% productivity
-  |         fetch_page("https://timeout.example.com/...") -> TIMEOUT (structured error)
-  |         fetch_page("https://blog.example.com/...") -> -20% productivity
+  |  Wave 0 transcripts:
+  |    web:  search_web("remote work economic impact on productivity") -> 4 results
+  |          fetch_page("https://timeout.example.com/remote-data") -> TIMEOUT (structured error)
+  |          (the model then writes a confident summary anyway)
   |    data: query_database("remote_work_stats") -> 5 rows (2020-2024)
   |    docs: parse_document("doc-remote-work-stanford") -> 2 sections + claims
   |
-  |  Wave 1 tasks run against Wave 0 results:
-  |    facts: verify_claim("+13% productivity") -> verified=True
-  |           verify_claim("-20% productivity") -> verified=False
-  |           flag_conflict(claim, for, against)
+  |  Wave 1 transcript, with Wave 0 results in its context:
+  |    facts: verify_claim("Remote workers are 20% less productive") -> verified=False
+  |           flag_conflict("Remote workers are more productive",
+  |                         for=[mckinsey.com, bls.gov], against=[workfromhome-blog])
   |
   v
-4. EVALUATE: fact_checker results identify:
-  |  - Verified claim: +13% productivity (McKinsey + Stanford)
-  |  - Debunked claim: -20% productivity (blog)
-  |  - Gap: timeout.example.com (could not fetch)
+4. EVALUATE: read from the logs, not the prose
+  |  - conflicts: the fact checker's flag_conflict tool result
+  |  - collect_tool_errors(results): [{task_id: web, tool_name: fetch_page,
+  |                                    error_type: timeout, retry_eligible: True}]
+  |  - collect_gaps(results): ["https://timeout.example.com/remote-data (timeout)"]
   |
   v
-5. RESOLVE: resolve_conflicts()
+5. RESOLVE: resolve_conflicts(conflicts, SOURCE_RELIABILITY_RATINGS)
   |  Claim: "Remote workers are more productive"
-  |  Sources for: mckinsey.com (MEDIUM=2), bls.gov (HIGH=3) = 5 points
-  |  Sources against: blog.example.com (LOW=1) = 1 point
-  |  Resolution: highest_reliability, confidence=0.80
+  |  Best tier for:     bls.gov (HIGH=3)
+  |  Best tier against: workfromhome-blog.example.com (LOW=1)
+  |  Resolution: highest_reliability, winning_side=for, confidence=0.80 (gap 2)
   |
   v
 6. SYNTHESIZE: build_research_report()
      ResearchReport(
        query="What is the economic impact...",
-       findings=[4 SourceResults],
-       conflicts=[1 ConflictRecord: resolved via reliability ranking],
-       gaps=["timeout.example.com (timeout)"],
+       findings=[4 SourceResults, one per subagent transcript],
+       conflicts=[1 ConflictRecord: highest_reliability, winning_side="for"],
+       gaps=["https://timeout.example.com/remote-data (timeout)"],
        confidence_score=0.70  (0.8 base - 0.1 for gap)
      )
 ```
 
-Every step maps to a specific module, model, and CCA concept. The final report is transparent about what it found, what contradicted, what it couldn't reach, and how confident it is.
+Replay the same transcripts with `dispatch_fn=silent_dispatch` and the only lines that change are step 4's (no errors, no gaps) and the final confidence (0.80). Every step maps to a specific module, model, and CCA concept. The final report is transparent about what it found, what contradicted, what it couldn't reach, and how confident it is.
 
 ---
 
@@ -1102,6 +1212,6 @@ Every step maps to a specific module, model, and CCA concept. The final report i
 | Context isolation | `context_builder.py` | `shared_context.py` | "Subagent ignores instructions" -> context not explicitly passed |
 | Tool scoping (4-5) | `definitions.py` | `super_agent.py` | "Agent picks wrong tool" -> decompose into 4-5 tools per agent |
 | Structured errors | `ToolErrorResponse` | `silent_failures.py` | "Report missing data" -> require structured error context |
-| Conflict resolution | `conflict_resolver.py` | First-result-wins | "Contradicting sources" -> reliability ranking + majority |
+| Conflict resolution | `conflict_resolver.py` | First-result-wins (Notebook 06) | "Contradicting sources" -> best-tier reliability ranking, then majority, then human flag |
 | Task decomposition | `sort_tasks_into_waves()` | All-sequential | "Parallel or sequential?" -> check data dependencies |
 | MCP primitives | Notebook 07 | N/A | "Source reliability DB" -> Resource, not Tool |
