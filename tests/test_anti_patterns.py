@@ -118,3 +118,40 @@ class TestSharedContextAntiPattern:
         sig = inspect.signature(run_leaky_subagent)
         params = list(sig.parameters.keys())
         assert "coordinator_messages" in params
+
+
+class TestRunnableAntiPatterns:
+    """Anti-patterns must be runnable through the real loop so notebooks can measure them."""
+
+    def test_silent_dispatch_hides_timeout(self, services: ServiceContainer):
+        from research_agents.anti_patterns.silent_failures import silent_dispatch
+
+        result = json.loads(silent_dispatch(
+            "web_researcher", "fetch_page",
+            {"url": "https://timeout.example.com/remote-data"}, services,
+        ))
+        assert result == {"status": "success", "data": None}
+
+    def test_silent_dispatch_falls_back_to_real_handlers(self, services: ServiceContainer):
+        from research_agents.anti_patterns.silent_failures import silent_dispatch
+
+        result = json.loads(silent_dispatch(
+            "fact_checker", "score_reliability", {"url": "energy.gov"}, services,
+        ))
+        assert result["data"]["reliability"] == "high"
+
+    def test_super_agent_dispatch_ignores_scoping(self, services: ServiceContainer):
+        """The super agent executes any tool for any caller; scoped dispatch refuses."""
+        from research_agents.anti_patterns.super_agent import super_agent_dispatch
+        from research_agents.tools.handlers import dispatch
+
+        args = ("web_researcher", "query_database", {"table": "remote_work_stats"}, services)
+        scoped = json.loads(dispatch(*args))
+        unscoped = json.loads(super_agent_dispatch(*args))
+        assert scoped["status"] == "error"
+        assert scoped["error_type"] == "invalid_input"
+        assert unscoped["status"] == "success"
+        assert unscoped["data"]["table"] == "remote_work_stats"
+
+    def test_super_agent_has_exactly_20_tools(self):
+        assert get_super_agent_tool_count() == 20

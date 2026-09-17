@@ -15,6 +15,7 @@ import json
 
 from research_agents.services.container import ServiceContainer
 from research_agents.services.web_search import WebSearchNotFoundError, WebSearchTimeoutError
+from research_agents.tools.handlers import Handler, dispatch
 
 
 def handle_search_web_silent(input_dict: dict, services: ServiceContainer) -> str:
@@ -38,9 +39,25 @@ def handle_fetch_page_silent(input_dict: dict, services: ServiceContainer) -> st
 
 
 # Silent failure dispatch — maps same tool names but with silent handlers
-SILENT_DISPATCH: dict[str, dict[str, object]] = {
+SILENT_DISPATCH: dict[str, dict[str, Handler]] = {
     "web_researcher": {
         "search_web": handle_search_web_silent,
         "fetch_page": handle_fetch_page_silent,
     },
 }
+
+
+def silent_dispatch(
+    agent_type: str, tool_name: str, input_dict: dict, services: ServiceContainer
+) -> str:
+    """ANTI-PATTERN router: silent handlers where defined, real ones elsewhere.
+
+    Same signature as ``tools.handlers.dispatch`` so it can be injected into
+    ``run_agent_loop(dispatch_fn=...)``. That lets a notebook replay one
+    scripted transcript through both routers and compare what reaches the
+    coordinator.
+    """
+    handler = SILENT_DISPATCH.get(agent_type, {}).get(tool_name)
+    if handler is not None:
+        return handler(input_dict, services)
+    return dispatch(agent_type, tool_name, input_dict, services)

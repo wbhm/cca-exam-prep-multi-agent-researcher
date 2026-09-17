@@ -1,15 +1,17 @@
 """Dispatch registry for tool handlers.
 
-Keyed by (agent_type, tool_name) so handlers are isolated per agent.
-Follows the same dict-based dispatch pattern as the sibling project.
+Nested ``DISPATCH[agent_type][tool_name]`` so handlers are isolated per
+agent: a tool name is only reachable through the agent that owns it, and an
+out-of-scope call gets a structured ``invalid_input`` error rather than a
+handler. Follows the same dict-based dispatch pattern as the sibling project.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 
 from research_agents.services.container import ServiceContainer
+from research_agents.tools._errors import error_response
 from research_agents.tools.coordinator_tools import (
     handle_collect_results,
     handle_compile_report,
@@ -87,24 +89,16 @@ def dispatch(agent_type: str, tool_name: str, input_dict: dict, services: Servic
     """
     agent_handlers = DISPATCH.get(agent_type)
     if agent_handlers is None:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "dispatch",
-            "message": f"Unknown agent_type: {agent_type}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "dispatch",
+            f"Unknown agent_type: {agent_type}",
+        )
     handler = agent_handlers.get(tool_name)
     if handler is None:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "dispatch",
-            "message": f"Unknown tool '{tool_name}' for agent '{agent_type}'",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "dispatch",
+            f"Unknown tool '{tool_name}' for agent '{agent_type}'",
+        )
     return handler(input_dict, services)

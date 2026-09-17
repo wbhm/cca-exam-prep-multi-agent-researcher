@@ -5,20 +5,17 @@ from __future__ import annotations
 import json
 
 from research_agents.services.container import ServiceContainer
+from research_agents.tools._errors import error_response
 
 
 def handle_verify_claim(input_dict: dict, services: ServiceContainer) -> str:
     claim = input_dict.get("claim", "")
     if not claim:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "verify_claim",
-            "message": "claim parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "verify_claim",
+            "claim parameter is required",
+        )
     facts = services.knowledge_base.lookup_fact(claim)
     if not facts:
         return json.dumps({
@@ -48,15 +45,11 @@ def handle_cross_reference(input_dict: dict, services: ServiceContainer) -> str:
     claim = input_dict.get("claim", "")
     sources = input_dict.get("sources", [])
     if not claim:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "cross_reference",
-            "message": "claim parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "cross_reference",
+            "claim parameter is required",
+        )
     # Check reliability of each source
     source_ratings = {}
     for url in sources:
@@ -83,15 +76,11 @@ def handle_cross_reference(input_dict: dict, services: ServiceContainer) -> str:
 def handle_score_reliability(input_dict: dict, services: ServiceContainer) -> str:
     url = input_dict.get("url", "")
     if not url:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "score_reliability",
-            "message": "url parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "score_reliability",
+            "url parameter is required",
+        )
     reliability = services.knowledge_base.get_source_reliability(url)
     return json.dumps({
         "status": "success",
@@ -104,15 +93,11 @@ def handle_flag_conflict(input_dict: dict, services: ServiceContainer) -> str:
     sources_for = input_dict.get("sources_for", [])
     sources_against = input_dict.get("sources_against", [])
     if not claim:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "flag_conflict",
-            "message": "claim parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "flag_conflict",
+            "claim parameter is required",
+        )
     # Score reliability of all sources involved
     for_ratings = {
         url: services.knowledge_base.get_source_reliability(url).value for url in sources_for

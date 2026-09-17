@@ -6,34 +6,27 @@ import json
 
 from research_agents.services.container import ServiceContainer
 from research_agents.services.database import TableNotFoundError
+from research_agents.tools._errors import error_response
 
 
 def handle_query_database(input_dict: dict, services: ServiceContainer) -> str:
     table = input_dict.get("table", "")
     filters = input_dict.get("filters")
     if not table:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "query_database",
-            "message": "table parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "query_database",
+            "table parameter is required",
+        )
     try:
         rows = services.database.query(table, filters=filters)
         return json.dumps({"status": "success", "data": {"table": table, "rows": rows}})
     except TableNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"database:{table}",
-            "message": f"Table not found: {table}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"database:{table}",
+            f"Table not found: {table}",
+        )
 
 
 def handle_transform_data(input_dict: dict, services: ServiceContainer) -> str:
@@ -42,15 +35,11 @@ def handle_transform_data(input_dict: dict, services: ServiceContainer) -> str:
     aggregate = input_dict.get("aggregate")
     aggregate_column = input_dict.get("aggregate_column")
     if not table:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "transform_data",
-            "message": "table parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "transform_data",
+            "table parameter is required",
+        )
     try:
         rows = services.database.query(table)
         # Apply column selection
@@ -77,57 +66,41 @@ def handle_transform_data(input_dict: dict, services: ServiceContainer) -> str:
             result["rows"] = rows
         return json.dumps({"status": "success", "data": result})
     except TableNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"database:{table}",
-            "message": f"Table not found: {table}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"database:{table}",
+            f"Table not found: {table}",
+        )
 
 
 def handle_validate_schema(input_dict: dict, services: ServiceContainer) -> str:
     table = input_dict.get("table", "")
     if not table:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "validate_schema",
-            "message": "table parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "validate_schema",
+            "table parameter is required",
+        )
     try:
         schema = services.database.get_schema(table)
         return json.dumps({"status": "success", "data": schema})
     except TableNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"database:{table}",
-            "message": f"Table not found: {table}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"database:{table}",
+            f"Table not found: {table}",
+        )
 
 
 def handle_format_output(input_dict: dict, services: ServiceContainer) -> str:
     table = input_dict.get("table", "")
     filters = input_dict.get("filters")
     if not table:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "format_output",
-            "message": "table parameter is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "format_output",
+            "table parameter is required",
+        )
     try:
         rows = services.database.query(table, filters=filters)
         schema = services.database.get_schema(table)
@@ -141,12 +114,8 @@ def handle_format_output(input_dict: dict, services: ServiceContainer) -> str:
             "data": {"summary": "\n".join(summary_lines), "row_count": len(rows)},
         })
     except TableNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"database:{table}",
-            "message": f"Table not found: {table}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"database:{table}",
+            f"Table not found: {table}",
+        )

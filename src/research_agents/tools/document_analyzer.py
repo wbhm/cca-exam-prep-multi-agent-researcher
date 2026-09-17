@@ -6,20 +6,17 @@ import json
 
 from research_agents.services.container import ServiceContainer
 from research_agents.services.document_store import DocumentNotFoundError
+from research_agents.tools._errors import error_response
 
 
 def handle_parse_document(input_dict: dict, services: ServiceContainer) -> str:
     doc_id = input_dict.get("doc_id", "")
     if not doc_id:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "parse_document",
-            "message": "doc_id is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "parse_document",
+            "doc_id is required",
+        )
     try:
         doc = services.document_store.get_document(doc_id)
         return json.dumps({
@@ -34,30 +31,22 @@ def handle_parse_document(input_dict: dict, services: ServiceContainer) -> str:
             },
         })
     except DocumentNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"document_store:{doc_id}",
-            "message": f"Document not found: {doc_id}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"document_store:{doc_id}",
+            f"Document not found: {doc_id}",
+        )
 
 
 def handle_extract_sections(input_dict: dict, services: ServiceContainer) -> str:
     doc_id = input_dict.get("doc_id", "")
     heading = input_dict.get("heading", "")
     if not doc_id:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "extract_sections",
-            "message": "doc_id is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "extract_sections",
+            "doc_id is required",
+        )
     try:
         doc = services.document_store.get_document(doc_id)
         sections = doc.sections
@@ -76,29 +65,21 @@ def handle_extract_sections(input_dict: dict, services: ServiceContainer) -> str
             ],
         })
     except DocumentNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"document_store:{doc_id}",
-            "message": f"Document not found: {doc_id}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"document_store:{doc_id}",
+            f"Document not found: {doc_id}",
+        )
 
 
 def handle_identify_claims(input_dict: dict, services: ServiceContainer) -> str:
     doc_id = input_dict.get("doc_id", "")
     if not doc_id:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "identify_claims",
-            "message": "doc_id is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "identify_claims",
+            "doc_id is required",
+        )
     try:
         doc = services.document_store.get_document(doc_id)
         all_claims = []
@@ -109,29 +90,21 @@ def handle_identify_claims(input_dict: dict, services: ServiceContainer) -> str:
             "data": {"doc_id": doc.doc_id, "title": doc.title, "claims": all_claims},
         })
     except DocumentNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"document_store:{doc_id}",
-            "message": f"Document not found: {doc_id}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"document_store:{doc_id}",
+            f"Document not found: {doc_id}",
+        )
 
 
 def handle_check_citations(input_dict: dict, services: ServiceContainer) -> str:
     doc_id = input_dict.get("doc_id", "")
     if not doc_id:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "check_citations",
-            "message": "doc_id is required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "check_citations",
+            "doc_id is required",
+        )
     try:
         doc = services.document_store.get_document(doc_id)
         return json.dumps({
@@ -144,12 +117,8 @@ def handle_check_citations(input_dict: dict, services: ServiceContainer) -> str:
             },
         })
     except DocumentNotFoundError:
-        return json.dumps({
-            "status": "error",
-            "error_type": "not_found",
-            "source": f"document_store:{doc_id}",
-            "message": f"Document not found: {doc_id}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "not_found",
+            f"document_store:{doc_id}",
+            f"Document not found: {doc_id}",
+        )

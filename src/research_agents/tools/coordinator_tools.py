@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from research_agents.services.container import ServiceContainer
+from research_agents.tools._errors import error_response
 
 
 def handle_delegate_task(input_dict: dict, services: ServiceContainer) -> str:
@@ -16,26 +17,18 @@ def handle_delegate_task(input_dict: dict, services: ServiceContainer) -> str:
     instruction = input_dict.get("instruction", "")
     context = input_dict.get("context", "")
     if not all([agent_type, instruction]):
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "delegate_task",
-            "message": "agent_type and instruction are required",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "delegate_task",
+            "agent_type and instruction are required",
+        )
     valid_agents = {"web_researcher", "document_analyzer", "data_extractor", "fact_checker"}
     if agent_type not in valid_agents:
-        return json.dumps({
-            "status": "error",
-            "error_type": "invalid_input",
-            "source": "delegate_task",
-            "message": f"Unknown agent_type: {agent_type}. Valid: {sorted(valid_agents)}",
-            "retry_eligible": False,
-            "fallback_available": False,
-            "partial_data": None,
-        })
+        return error_response(
+            "invalid_input",
+            "delegate_task",
+            f"Unknown agent_type: {agent_type}. Valid: {sorted(valid_agents)}",
+        )
     return json.dumps({
         "status": "success",
         "data": {

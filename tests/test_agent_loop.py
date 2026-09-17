@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from research_agents.agent.agent_loop import AgentResult, UsageSummary, run_agent_loop
@@ -144,3 +145,115 @@ class TestAgentLoop:
         )
         assert result.usage.input_tokens == 300
         assert result.usage.output_tokens == 150
+
+
+class TestStopReasons:
+    """The loop must exit on every non-tool_use stop reason and record it."""
+
+    def test_max_tokens_stops_after_one_iteration(self, services: ServiceContainer):
+        """A truncated response must not be re-sent as if it were a tool call."""
+        mock_client = SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **kwargs: _make_response(
+                    [_make_text_block("Partial ans")], stop_reason="max_tokens",
+                )
+            )
+        )
+        result = run_agent_loop(
+            client=mock_client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher", max_iterations=5,
+        )
+        assert result.iterations == 1
+        assert result.stop_reason == "max_tokens"
+        assert result.content == "Partial ans"
+
+    def test_end_turn_records_stop_reason(self, services: ServiceContainer):
+        mock_client = SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **kwargs: _make_response([_make_text_block("Done")])
+            )
+        )
+        result = run_agent_loop(
+            client=mock_client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher",
+        )
+        assert result.stop_reason == "end_turn"
+
+    def test_exhausted_loop_is_marked(self, services: ServiceContainer):
+        """Hitting max_iterations must be distinguishable from a clean finish."""
+        mock_client = SimpleNamespace(
+            messages=SimpleNamespace(
+                create=lambda **kwargs: _make_response(
+                    [_make_tool_use_block("t1", "search_web", {"query": "test"})],
+                    stop_reason="tool_use",
+                )
+            )
+        )
+        result = run_agent_loop(
+            client=mock_client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher", max_iterations=2,
+        )
+        assert result.stop_reason == "max_iterations"
+
+
+class TestToolResults:
+    def _client_calling(self, tool_name: str, tool_input: dict) -> SimpleNamespace:
+        call_count = 0
+
+        def mock_create(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_response(
+                    [_make_tool_use_block("t1", tool_name, tool_input)], stop_reason="tool_use",
+                )
+            return _make_response([_make_text_block("Done")])
+
+        return SimpleNamespace(messages=SimpleNamespace(create=mock_create))
+
+    def test_tool_results_are_recorded(self, services: ServiceContainer):
+        client = self._client_calling("fetch_page", {"url": "https://timeout.example.com/remote-data"})
+        result = run_agent_loop(
+            client=client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher",
+        )
+        assert len(result.tool_results) == 1
+        entry = result.tool_results[0]
+        assert entry["tool_name"] == "fetch_page"
+        assert entry["tool_input"] == {"url": "https://timeout.example.com/remote-data"}
+        assert json.loads(entry["result"])["error_type"] == "timeout"
+
+    def test_error_results_are_flagged_is_error(self, services: ServiceContainer):
+        """A structured error is also marked at the protocol level."""
+        client = self._client_calling("fetch_page", {"url": "https://timeout.example.com/remote-data"})
+        result = run_agent_loop(
+            client=client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher",
+        )
+        tool_result_block = result.messages[2]["content"][0]
+        assert tool_result_block["type"] == "tool_result"
+        assert tool_result_block["is_error"] is True
+
+    def test_success_results_are_not_flagged(self, services: ServiceContainer):
+        client = self._client_calling("search_web", {"query": "renewable energy"})
+        result = run_agent_loop(
+            client=client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher",
+        )
+        assert result.messages[2]["content"][0]["is_error"] is False
+
+    def test_dispatch_fn_is_injectable(self, services: ServiceContainer):
+        seen = []
+
+        def fake_dispatch(agent_type, tool_name, input_dict, svc):
+            seen.append((agent_type, tool_name))
+            return json.dumps({"status": "success", "data": "stub"})
+
+        client = self._client_calling("search_web", {"query": "x"})
+        result = run_agent_loop(
+            client=client, services=services, user_message="q",
+            system_prompt="s", tools=[], agent_type="web_researcher",
+            dispatch_fn=fake_dispatch,
+        )
+        assert seen == [("web_researcher", "search_web")]
+        assert json.loads(result.tool_results[0]["result"])["data"] == "stub"

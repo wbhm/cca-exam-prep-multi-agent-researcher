@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from research_agents.anti_patterns.silent_failures import handle_fetch_page_silent
+from research_agents.models.errors import ToolErrorResponse
 from research_agents.services.container import ServiceContainer
 from research_agents.tools.handlers import dispatch
 
@@ -93,3 +96,23 @@ class TestSilentVsStructured:
         ))
         required_fields = {"status", "error_type", "source", "message", "retry_eligible", "fallback_available"}
         assert required_fields.issubset(result.keys())
+
+
+class TestErrorsMatchModel:
+    """Every emitted error must round-trip through ToolErrorResponse."""
+
+    @pytest.mark.parametrize("agent_type,tool_name,input_dict", [
+        ("web_researcher", "fetch_page", {"url": "https://timeout.example.com/remote-data"}),
+        ("web_researcher", "fetch_page", {"url": "https://healthtech.example.com/ai-revolution"}),
+        ("web_researcher", "search_web", {"query": ""}),
+        ("document_analyzer", "parse_document", {"doc_id": "missing"}),
+        ("data_extractor", "query_database", {"table": "missing"}),
+        ("fact_checker", "verify_claim", {}),
+        ("coordinator", "delegate_task", {"agent_type": "nope", "instruction": "x"}),
+        ("web_researcher", "query_database", {}),
+        ("nobody", "search_web", {}),
+    ])
+    def test_error_validates(self, services: ServiceContainer, agent_type, tool_name, input_dict):
+        raw = dispatch(agent_type, tool_name, input_dict, services)
+        parsed = ToolErrorResponse.model_validate_json(raw)
+        assert parsed.status == "error"
