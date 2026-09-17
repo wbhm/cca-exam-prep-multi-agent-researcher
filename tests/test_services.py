@@ -113,6 +113,15 @@ class TestKnowledgeBase:
         verified = [f for f in facts if f.verified]
         assert len(verified) >= 1
 
+    def test_lookup_fact_ranks_closest_claim_first(self, services: ServiceContainer):
+        """The debunked 45% record must outrank the verified 30% record for a 45% claim."""
+        facts = services.knowledge_base.lookup_fact(
+            "Renewable energy accounts for 45% of global electricity"
+        )
+        assert len(facts) >= 2
+        assert facts[0].verified is False
+        assert facts[0].confidence == 0.10
+
     def test_lookup_fact_not_found(self, services: ServiceContainer):
         facts = services.knowledge_base.lookup_fact("quantum teleportation xyz")
         assert facts == []

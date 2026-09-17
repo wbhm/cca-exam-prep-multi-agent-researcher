@@ -226,13 +226,28 @@ class TestFactCheckerHandlers:
         assert result["data"]["verified"] is True
 
     def test_verify_claim_false(self, services: ServiceContainer):
+        """A debunked claim must come back verified=False, not matched to the true record."""
         result = json.loads(dispatch(
             "fact_checker", "verify_claim",
             {"claim": "Renewable energy accounts for 45% of global electricity"}, services,
         ))
         assert result["status"] == "success"
-        # Both facts match (30% and 45%), but the verified=True one has higher confidence
-        # The key point: the system CAN distinguish true from false claims
+        assert result["data"]["verified"] is False
+        assert result["data"]["confidence"] == 0.10
+
+    def test_verify_claim_debunked_productivity(self, services: ServiceContainer):
+        result = json.loads(dispatch(
+            "fact_checker", "verify_claim",
+            {"claim": "Remote workers are 20% less productive"}, services,
+        ))
+        assert result["data"]["verified"] is False
+
+    def test_cross_reference_uses_closest_fact(self, services: ServiceContainer):
+        result = json.loads(dispatch(
+            "fact_checker", "cross_reference",
+            {"claim": "Remote workers are 20% less productive", "sources": []}, services,
+        ))
+        assert result["data"]["knowledge_base_verified"] is False
 
     def test_score_reliability(self, services: ServiceContainer):
         result = json.loads(dispatch(

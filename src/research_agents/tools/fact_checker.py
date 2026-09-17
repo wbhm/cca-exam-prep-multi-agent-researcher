@@ -30,8 +30,8 @@ def handle_verify_claim(input_dict: dict, services: ServiceContainer) -> str:
                 "message": "No matching facts found in knowledge base",
             },
         })
-    # Return the best match (highest confidence)
-    best = max(facts, key=lambda f: f.confidence)
+    # lookup_fact returns the closest-matching record first
+    best = facts[0]
     return json.dumps({
         "status": "success",
         "data": {
@@ -67,8 +67,7 @@ def handle_cross_reference(input_dict: dict, services: ServiceContainer) -> str:
     facts = services.knowledge_base.lookup_fact(claim)
     verified_status = None
     if facts:
-        best = max(facts, key=lambda f: f.confidence)
-        verified_status = best.verified
+        verified_status = facts[0].verified
 
     return json.dumps({
         "status": "success",
