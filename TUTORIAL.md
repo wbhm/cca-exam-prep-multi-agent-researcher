@@ -37,11 +37,11 @@ The Exam track is what we built this for. The Concept track is the "I have 90 mi
 
 ```bash
 poetry install --with notebooks
-poetry run pytest                # 180 tests, no API key needed
+poetry run pytest                # no API key needed
 poetry run jupyter lab           # then open notebooks/
 ```
 
-No `ANTHROPIC_API_KEY` is required for any notebook — every live-call cell is tagged `skip-execution` and has a mock alongside. Set `ANTHROPIC_API_KEY` only if you want to run the integration cells against the real API.
+No `ANTHROPIC_API_KEY` is required for any notebook — none of them calls the Claude API. Every demonstration replays a scripted transcript (`research_agents.testing.scripted_client`) through the real agent loop, real dispatch, and real simulated services, so the numbers you see are deterministic. Notebook 00 loads `.env` if one exists and reports whether a key is set, which only matters if you adapt a cell to a live client.
 
 ---
 
@@ -95,14 +95,15 @@ Each section follows the same shape:
 **Article section.** *The Context Isolation Trap* (Question 1 in the walkthrough).
 
 **Key cells.**
-- `run_leaky_subagent()` anti-pattern — shows `str(coordinator_messages)` leaking coordinator reasoning and prior-agent output.
-- `build_subagent_context(task)` correct pattern — a clean, bounded string.
-- `compare_results()` — shows the two contexts side by side.
+- `run_leaky_subagent()` anti-pattern, run through the real loop with a recording client — the cell reads back what the subagent was actually sent and checks it for the coordinator's reasoning and another agent's result.
+- The "forgot to forward" case — `build_subagent_context(task)` with no APA rule in `task.context`. This is the exam's bug: clean context, missing instruction, no error raised.
+- `build_subagent_context(task)` with the rule forwarded — the fix.
+- `compare_results()` — every value measured from `client.calls[0]`, the user message the loop sent.
 
 **CCA Exam Tip (from 02).**
 > Any question where a subagent produces results that "should have followed the coordinator's instructions" is testing context isolation. The answer is always that the instructions were in the coordinator's context but never explicitly forwarded.
 
-**Try this.** The canonical exam scenario: coordinator tells user "use APA citations." Web researcher returns MLA citations. Why? Because "use APA citations" was in the coordinator's turn, not in the subagent's `task.context`. Add `"Use APA citation format"` to `task.context` and re-run. Confirm the explicit-context string now contains "APA" while the leaked version also contained "APA" but buried in unrelated coordinator reasoning — that buriedness is exactly the attention-dilution problem.
+**Try this.** The canonical exam scenario: the user tells the coordinator "use APA citations." The web researcher returns MLA citations. Why? Because "use APA citations" was in the coordinator's turn, not in the subagent's `task.context`. The notebook shows both halves: the leaked version contains "APA" buried in unrelated coordinator reasoning (attention dilution), and the forgot-to-forward version does not contain it at all (the exam's bug). Remove `Use APA citation format.` from the fixed task's `context` and re-run the comparison; the `has_citation_instruction` row flips back.
 
 ---
 
@@ -113,9 +114,10 @@ Each section follows the same shape:
 **Article section.** *The Super Agent Anti-Pattern* (Question 2 in the walkthrough).
 
 **Key cells.**
-- Print every tool on `SUPER_AGENT_TOOLS` — count exceeds 18.
-- Print `ALL_TOOL_SETS` — 5 agents × 4 tools each.
-- `compare_results()` — `tools_per_agent: 20` vs `tools_per_agent: 4`.
+- Print every tool on `SUPER_AGENT_TOOLS` — 20 tools, past the exam's 18+ threshold.
+- Print `ALL_TOOL_SETS` — four subagents plus the coordinator, 4 tools each.
+- The replay cell — one scripted `query_database` call from a web researcher, run through `super_agent_dispatch` (executes, returns rows) and scoped `dispatch` (refused with a structured `invalid_input` error).
+- `compare_results()` — `max_tools_per_agent` 20 vs 4, `out_of_scope_call_blocked` False vs True.
 
 **CCA Exam Tip (from 03).**
 > Answer choices will include "improve tool descriptions" and "add a tool-selection preprocessing step" — both wrong. The correct answer is **decompose into specialized subagents with 4–5 tools each**. The improvement is architectural, not descriptive.
@@ -136,11 +138,12 @@ Each section follows the same shape:
 - `handle_fetch_page_silent(...)` on the timeout URL — returns `success` with `null`.
 - `dispatch('web_researcher', 'fetch_page', ...)` on the same URL — returns structured error.
 - Same dispatch on the 404 URL — a *different* decision tree (`retry_eligible=False`, `fallback_available=True`).
+- The cascade cell — one scripted transcript run through `run_coordinator()` twice, with `silent_dispatch` and with `dispatch`. The model's summary is identical in both; only the structured run yields a `timeout.example.com (timeout)` gap and a confidence of 0.70 instead of 0.80.
 
 **CCA Exam Tip (from 04).**
 > Distractors: "increase timeout duration" (symptom), "add retry logic" (partial). Correct: **require structured error context from subagents**. The coordinator needs enough information to decide between retry, fallback, or flag-gap — silent failures remove that decision-making ability.
 
-**Try this.** Run `grep -rn 'silent' src/research_agents/anti_patterns/` — notice that every silent failure looks exactly like a successful empty result. Now imagine a 5-step research pipeline where step 2 silently fails. Steps 3–5 proceed on empty data, producing a report that *appears* complete but is missing a critical source. This is how silent failures cascade.
+**Try this.** Run `grep -rn 'silent' src/research_agents/anti_patterns/` — notice that every silent failure looks exactly like a successful empty result. Then change the cascade cell's URL to the 404 URL and re-run: the gap string changes to `(not_found)` and `retry_eligible` flips, but the silent run still reports no gap at all.
 
 ---
 
@@ -152,7 +155,8 @@ Each section follows the same shape:
 
 **Key cells.**
 - Four tasks where `web`, `data`, `docs` are independent and `facts` depends on all three — produces 2 waves (one of size 3, one of size 1).
-- A fully sequential variant (each depends on the previous) — produces 4 waves of size 1. Compare the two.
+- The all-sequential anti-pattern (each task depends on the previous) — 4 waves of size 1.
+- `compare_results()` — `wave_count` 4 vs 2, `max_parallel_tasks` 1 vs 3.
 
 **CCA Exam Tip (from 05).**
 > If Subtask B needs output from Subtask A → sequential (`depends_on`). If they work from independent inputs → parallel. "Web search" and "document parsing" are the canonical parallel pair. "Fact checking" and "report writing" are always sequential.
@@ -168,16 +172,18 @@ Each section follows the same shape:
 **Article section.** *Validation and Conflict Resolution*.
 
 **Key cells.**
-- Strategy 1: `.gov` vs blog → reliability wins, confidence > 0.5.
-- Strategy 2: three medium-reliability sources vs one medium-reliability source → majority wins.
-- Strategy 3: equal reliability + equal count → flagged for human review (confidence 0.3).
+- The first-result-wins anti-pattern — the same three reports in two arrival orders give two different verdicts.
+- `resolve_conflict()` on the same two orders — the same `winning_side` both times.
+- Strategy 1: `.gov` vs blog → reliability wins; HIGH(3) vs LOW(1) is a gap of 2, so confidence is 0.80.
+- Strategy 2: three medium-reliability sources vs one → best tiers tie, majority wins, confidence 0.75.
+- Strategy 3: equal reliability + equal count → flagged for human review (confidence 0.3, `winning_side` undecided).
 
 **CCA Exam Tip (from 06).**
 > The resolution is **deterministic** — same inputs always produce same output. "First result wins" is always the wrong answer. "Let the LLM decide" is also wrong — prompt-based guidance is the distractor; programmatic enforcement is the CCA answer.
 
 *Why deterministic?* Enterprise systems need **predictable, auditable, repeatable** outcomes — a resolution must be reviewable after the fact and reproducible for compliance. LLM judgment can't meet those three requirements; programmatic rules can.
 
-**Try this.** Construct a `ConflictRecord` where both sides have `SourceReliability.HIGH` but one side has 2 sources and the other has 3. Call `resolve_conflict()` — the resolution should be `"majority"`, confidence `3/5 = 0.6`. Now flip it to 2 vs 2 — resolution becomes `"flagged_for_human"`. This is the three-tier fallback at work.
+**Try this.** Call `resolve_conflict()` with 2 HIGH sources for and 3 HIGH sources against. The best tiers tie, so the resolution is `"majority"` with `winning_side="against"` and confidence `3/5 = 0.6`. Now make it 2 vs 2 — resolution becomes `"flagged_for_human"`. Then put one `.gov` source against three blogs: reliability wins for the `.gov` side, because the resolver compares the best tier on each side rather than adding scores up. `tests/test_docs.py` runs these three cases so this paragraph cannot drift from the code.
 
 ---
 
@@ -189,14 +195,15 @@ Each section follows the same shape:
 
 **Key cells.**
 - Print `ALL_TOOL_SETS` — every item is an action.
-- Print the conceptual resource catalog — every item is read-only data.
+- The Resource cell — calls `get_source_reliability()`, `list_documents()`, and `get_schema()`; every item is read-only data behind a URI the server chooses.
+- The Tool cell — calls `dispatch('fact_checker', 'verify_claim', ...)`; computation the model triggers.
 - Print the prompt templates — every item is a parameterized pattern.
 - The 5-item classification quiz with worked answers.
 
 **CCA Exam Tip (from 07).**
 > If a question describes a *source reliability database* → **Resource**, not a Tool. The distractor makes a Resource look like a Tool because both involve "getting information." The difference: Tools have side effects or perform computation; Resources are read-only data.
 
-*Foolproof test:* **if you can't *run* it, it's probably a Resource.** A Tool *performs an action* (e.g., `fetch_page(url)`, `verify_claim(claim)`) — often *using* a Resource. A Resource is the *data or infrastructure the Tool acts upon* (e.g., a database of sources, a schema catalog, a file system). Same information can appear behind either primitive — ask which side of the verb it sits on.
+*Foolproof test:* **if you can't *run* it, it's probably a Resource.** A Tool *performs an action* (e.g., `fetch_page(url)`, `verify_claim(claim)`) — often *using* a Resource. A Resource is the *data or infrastructure the Tool acts upon* (e.g., a database of sources, a schema catalog, a file system). Same information can appear behind either primitive — ask which side of the verb it sits on, and who decides to use it: Tools are model-controlled, Resources application-controlled, Prompts user-controlled.
 
 **Try this.** Cover the right-hand column and classify each of these yourself before reading the quiz output: `"fetch_page(url)"`, `"list of source reliability ratings"`, `"APA citation template"`, `"verify_claim(claim)"`, `"database schemas catalog"`. If you classify any of the data items as Tools, re-read Resource definitions in the notebook.
 
@@ -204,21 +211,23 @@ Each section follows the same shape:
 
 ### 📘 [08 — End-to-End Integration](notebooks/08_integration.ipynb)
 
-**What it teaches.** All six coordinator steps in one flow: PLAN → SORT → DELEGATE → EVALUATE → RESOLVE → SYNTHESIZE. Uses the `economic_impact` scenario (both a conflict and a gap) and a mock Claude client so the notebook runs without an API key.
+**What it teaches.** All six coordinator steps in one flow: PLAN → SORT → DELEGATE → EVALUATE → RESOLVE → SYNTHESIZE. Uses the `economic_impact` scenario (both a conflict and a gap). Four scripted subagents each call real tools through the real loop: one fetch times out and the fact checker flags a contradiction, so every step has something to do.
 
 **Article section.** *The Three Exam Walkthrough Questions* (this notebook has the end-to-end distractor analysis).
 
 **Key cells.**
 - Load `SCENARIOS['economic_impact']` — expected 1 conflict + 1 gap.
 - Task decomposition → 2 waves.
-- Mock coordinator run → results per task.
-- `build_research_report()` → `ResearchReport` with resolved conflicts, declared gaps, adjusted confidence.
+- Scripted coordinator run → tool calls per task, and the scoped tool list each API call received.
+- EVALUATE → the fact checker's `verify_claim` and `flag_conflict` tool results; `collect_tool_errors()` and `collect_gaps()` read the timeout out of the web researcher's log.
+- `build_research_report()` → `ResearchReport` with the conflict resolved by reliability (`winning_side: for`), one declared gap, confidence 0.70.
+- The closing `compare_results()` — the same transcripts through `silent_dispatch`: identical tool calls, no gap, confidence 0.80.
 - The distractor analysis for all three exam walkthrough questions.
 
 **CCA Exam Tip (from 08).**
 > Key models to know: `SubTask` (unit of delegation with explicit context), `ToolErrorResponse` (structured errors), `ConflictRecord` (deterministic resolution metadata), `ResearchReport` (transparent output with gaps and confidence).
 
-**Try this.** Modify the `conflicts` list so *both* sides have only `SourceReliability.HIGH` sources with equal count. Re-run — the report's confidence should drop by 0.05 (the penalty for unresolved conflicts).
+**Try this.** Change the fact checker's scripted `flag_conflict` call so both sides list one `.gov` URL. Re-run — the conflict is flagged for human review and the report's confidence drops a further 0.05.
 
 ---
 
@@ -228,11 +237,11 @@ The published article walks through three representative exam questions. Each on
 
 ### Question 1 — Context Isolation
 
-**Scenario:** A coordinator instructs the user to "use APA citation format." A web-research subagent returns sources formatted in MLA. Why?
+**Scenario:** A user instructs the coordinator to "use APA citation format." A web-research subagent returns sources formatted in MLA. Why?
 
 **Correct answer.** The APA instruction was in the coordinator's *message history* but was never placed into the subagent's `task.context`. The subagent never saw it.
 
-**Code pointer.** [`notebooks/02_context_isolation.ipynb`](notebooks/02_context_isolation.ipynb) — the `run_leaky_subagent` and `build_subagent_context(task)` cells make this visible side by side. Verified in [`tests/test_context_isolation.py`](tests/test_context_isolation.py).
+**Code pointer.** [`notebooks/02_context_isolation.ipynb`](notebooks/02_context_isolation.ipynb) — the `run_leaky_subagent`, forgot-to-forward, and `build_subagent_context(task)` cells all run through the real loop and read back what each subagent was sent. Verified in [`tests/test_context_isolation.py`](tests/test_context_isolation.py).
 
 **Distractors to reject.**
 - *"The subagent needs a better system prompt."* No — the issue is missing context, not missing instruction.
@@ -244,7 +253,7 @@ The published article walks through three representative exam questions. Each on
 
 **Correct answer.** Decompose into specialized subagents with 4–5 tools each. This is architectural.
 
-**Code pointer.** [`notebooks/03_tool_scoping.ipynb`](notebooks/03_tool_scoping.ipynb) — compares `SUPER_AGENT_TOOLS` (20 tools on one agent) against `ALL_TOOL_SETS` (5 agents × 4 tools). Verified in [`tests/test_anti_patterns.py`](tests/test_anti_patterns.py) (asserts `SUPER_AGENT_TOOLS` count exceeds 18) and [`tests/test_tools.py`](tests/test_tools.py) (asserts each focused set has 4 tools).
+**Code pointer.** [`notebooks/03_tool_scoping.ipynb`](notebooks/03_tool_scoping.ipynb) — compares `SUPER_AGENT_TOOLS` (20 tools on one agent) against the four subagents' sets (4 tools each), then replays one out-of-scope call through both routers. Verified in [`tests/test_anti_patterns.py`](tests/test_anti_patterns.py) (asserts `SUPER_AGENT_TOOLS` count exceeds 18) and [`tests/test_tools.py`](tests/test_tools.py) (asserts each focused set has 4 tools).
 
 **Distractors to reject.**
 - *"Improve tool descriptions."* Better descriptions on 18 tools still cause attention fragmentation — this is the canonical trap.
@@ -256,7 +265,7 @@ The published article walks through three representative exam questions. Each on
 
 **Correct answer.** Require structured error context from subagents — `ToolErrorResponse` with `error_type`, `retry_eligible`, `fallback_available`, `source`. This gives the coordinator a decision tree.
 
-**Code pointer.** [`notebooks/04_error_handling.ipynb`](notebooks/04_error_handling.ipynb) shows silent vs structured responses on the same timeout URL. Verified in [`tests/test_error_handling.py`](tests/test_error_handling.py).
+**Code pointer.** [`notebooks/04_error_handling.ipynb`](notebooks/04_error_handling.ipynb) shows silent vs structured responses on the same timeout URL, then runs the cascade through the coordinator with both routers. Verified in [`tests/test_coordinator.py`](tests/test_coordinator.py) and [`tests/test_error_handling.py`](tests/test_error_handling.py).
 
 **Distractors to reject.**
 - *"Increase timeout duration."* Symptom fix — the next slow service still fails silently.
@@ -271,7 +280,7 @@ Tick these off as you work through the notebooks. If you cannot explain an item 
 - [ ] I can describe the hub-and-spoke pattern and name the spokes in this codebase.
 - [ ] I can name the function (`build_subagent_context`) that enforces context isolation and say what arguments it *does not* accept.
 - [ ] I can state the rule: 4–5 tools per agent, and I can explain why improving tool descriptions does not fix the super-agent anti-pattern.
-- [ ] I can list the four fields of `ToolErrorResponse` and explain the decision each one drives.
+- [ ] I can list the fields of `ToolErrorResponse` (`error_type`, `source`, `message`, `retry_eligible`, `fallback_available`, `partial_data`) and explain the decision each one drives.
 - [ ] I can explain the difference between a silent failure and an empty-but-legitimate result.
 - [ ] I can explain why `depends_on` is the only mechanism that creates sequential ordering.
 - [ ] I can trace a task through `sort_tasks_into_waves()` and predict the wave layout.
@@ -289,7 +298,7 @@ Tick these off as you work through the notebooks. If you cannot explain an item 
 ## Next Steps
 
 - **Deep code walkthrough.** [`docs/tutorial.md`](docs/tutorial.md) is the module-by-module reference — 16 sections covering every Pydantic model, service, tool, handler, agent, and anti-pattern.
-- **The full test suite.** `poetry run pytest` runs 180 tests with no API key required. `tests/test_notebook_execution.py` is the harness that keeps notebooks honest.
+- **The full test suite.** `poetry run pytest` runs with no API key required. `tests/test_notebook_execution.py` is the harness that keeps notebooks honest.
 - **The broader CCA series.** See [the series index in README.md](README.md#series-context) for the six-article progression. This project is Article 4.
 - **Exam preparation.** [Anthropic Academy](https://anthropic.skilljar.com) has 13 free courses aligned to the CCA domains.
 
