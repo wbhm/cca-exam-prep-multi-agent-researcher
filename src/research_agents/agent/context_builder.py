@@ -1,9 +1,11 @@
 """Explicit context passing — the enforcer of context isolation.
 
 CCA Key Concept #1: Subagents do NOT inherit coordinator context.
-This module is the ONLY way to create subagent input. It accepts a SubTask
-(which has only explicitly-selected context) and optionally predecessor
-results (filtered by depends_on). It returns a plain string.
+This module is the only way ``run_coordinator`` builds subagent input. It
+accepts a SubTask (which has only explicitly-selected context) and optionally
+predecessor results (filtered by depends_on). It returns a plain string.
+(``run_agent_loop`` itself accepts any string; the anti-pattern in
+``anti_patterns/shared_context.py`` exploits exactly that.)
 
 The coordinator's message history, system prompt, and other subagents'
 results are NEVER passed unless deliberately included in the SubTask.

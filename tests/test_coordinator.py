@@ -211,3 +211,70 @@ class TestBuildResearchReport:
         )
         assert len(report.conflicts) == 1
         assert report.conflicts[0].resolution == "highest_reliability"
+
+
+class TestGapCollection:
+    """Gaps must be derived from structured tool errors, not supplied by hand."""
+
+    TIMEOUT_URL = "https://timeout.example.com/remote-data"
+
+    def _web_task(self) -> list[SubTask]:
+        return [SubTask(task_id="web", agent_type="web_researcher", instruction="fetch", context="")]
+
+    def _script(self):
+        from research_agents.testing import text_turn, tool_turn
+
+        return {
+            "web_researcher": [
+                tool_turn("fetch_page", {"url": self.TIMEOUT_URL}),
+                text_turn("Could not reach the remote source."),
+            ]
+        }
+
+    def test_structured_error_becomes_a_gap(self, services: ServiceContainer):
+        from research_agents.agent.coordinator import collect_gaps, collect_tool_errors
+        from research_agents.testing import scripted_client
+
+        results, _ = run_coordinator(scripted_client(self._script()), services, self._web_task())
+        errors = collect_tool_errors(results)
+        assert errors == [{
+            "task_id": "web",
+            "tool_name": "fetch_page",
+            "error_type": "timeout",
+            "source": self.TIMEOUT_URL,
+            "retry_eligible": True,
+            "fallback_available": False,
+        }]
+        assert collect_gaps(results) == [f"{self.TIMEOUT_URL} (timeout)"]
+
+        report = build_research_report("q", results, reliability_lookup={})
+        assert report.gaps == [f"{self.TIMEOUT_URL} (timeout)"]
+        assert report.confidence_score == 0.7
+
+    def test_silent_failure_hides_the_gap(self, services: ServiceContainer):
+        """Same transcript through the silent router: the report claims full coverage."""
+        from research_agents.anti_patterns.silent_failures import silent_dispatch
+        from research_agents.testing import scripted_client
+
+        results, _ = run_coordinator(
+            scripted_client(self._script()), services, self._web_task(),
+            dispatch_fn=silent_dispatch,
+        )
+        assert results["web"].tool_calls == 1  # the call still happened
+        report = build_research_report("q", results, reliability_lookup={})
+        assert report.gaps == []
+        assert report.confidence_score == 0.8
+
+    def test_exhausted_loop_is_a_gap(self, services: ServiceContainer):
+        from research_agents.agent.coordinator import collect_gaps
+        from research_agents.testing import scripted_client, tool_turn
+
+        client = scripted_client([tool_turn("search_web", {"query": "renewable energy"})] * 3)
+        results, _ = run_coordinator(client, services, self._web_task(), max_iterations=2)
+        assert results["web"].stop_reason == "max_iterations"
+        assert collect_gaps(results) == ["web (max_iterations)"]
+
+    def test_explicit_gaps_still_win(self, services: ServiceContainer):
+        results = {"t1": AgentResult(content="x")}
+        report = build_research_report("q", results, reliability_lookup={}, gaps=["manual"])
+        assert report.gaps == ["manual"]
