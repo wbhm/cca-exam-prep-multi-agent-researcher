@@ -32,16 +32,18 @@ The CCA exam tests these concepts with specific question patterns. Each notebook
 # 1. Install dependencies
 poetry install --with notebooks
 
-# 2. Set your API key (optional -- tests work without it)
-cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
-
-# 3. Run all 180 tests (no API key needed)
+# 2. Run the test suite (no API key needed)
 poetry run pytest
 
-# 4. Launch notebooks
+# 3. Launch notebooks
 poetry run jupyter lab
 ```
+
+No API key is required. No notebook calls the Claude API: every demonstration
+replays a scripted transcript (`research_agents.testing.scripted_client`) through
+the real agent loop, so every printed number is deterministic. If you create a
+`.env` from `.env.example`, notebook 00 loads it and reports whether the key is
+set; that only matters if you adapt a cell to use a live client.
 
 ## Reading Guides
 
@@ -69,19 +71,19 @@ For a complete code walkthrough that explains every module, model, and design de
 The `coordinator.py` implements a 6-step flow that mirrors the exam's correct answer for multi-agent orchestration:
 
 ```
-1. PLAN      Decompose query into SubTasks with depends_on fields
+1. PLAN      Decompose query into SubTasks with depends_on fields (done by the caller)
 2. SORT      Topological sort into parallel execution waves
 3. DELEGATE  Build explicit context -> run_agent_loop with scoped tools
-4. EVALUATE  Send results to fact_checker for cross-referencing
+4. EVALUATE  A fact_checker SubTask that depends_on the others cross-references them
 5. RESOLVE   Deterministic conflict resolution (not LLM judgment)
-6. SYNTHESIZE Compile ResearchReport with findings, conflicts, and gaps
+6. SYNTHESIZE Compile ResearchReport; gaps are derived from structured tool errors
 ```
 
 Subagents (spokes) only talk to the coordinator (hub), never to each other.
 
 ### Context Isolation (CCA Context Management Domain)
 
-`context_builder.py` is the enforcer. It's the ONLY way to create subagent input:
+`context_builder.py` is the enforcer. It is the only way `run_coordinator()` builds subagent input:
 - **Receives**: `SubTask.instruction`, `SubTask.context` (explicitly selected), predecessor results filtered by `depends_on`
 - **Never receives**: coordinator messages, coordinator system prompt, other subagents' results
 
@@ -103,16 +105,18 @@ The anti-pattern (`super_agent.py`) combines all 20 tools into one agent. The ex
 
 ### Structured Error Handling vs Silent Failures (CCA Reliability Domain)
 
-Every tool handler returns a `ToolErrorResponse` on failure with `error_type`, `retry_eligible`, `fallback_available`, and `partial_data`. The coordinator uses this to retry timeouts, flag gaps, and adjust confidence.
+Every tool handler returns a `ToolErrorResponse` on failure (serialized through `tools/_errors.error_response()`) with `error_type`, `source`, `retry_eligible`, `fallback_available`, and `partial_data`. The agent loop logs every tool result and marks errors with `is_error`; `coordinator.collect_gaps()` turns them into the report's `gaps`, which lowers its confidence score. Retry and fallback are decisions left to the caller; the schema is what makes them possible.
 
 The anti-pattern returns `{"status":"success","data":null}` -- making it impossible to distinguish "no data found" from "service failed." The exam answer is always "require structured error context from subagents."
 
 ### Deterministic Conflict Resolution
 
 When sources contradict, `conflict_resolver.py` uses three strategies in priority order:
-1. **Source reliability ranking**: `.gov` (3 pts) > news (2 pts) > blog (1 pt)
-2. **Majority consensus**: when reliability ties, more sources wins
+1. **Source reliability ranking**: compare the best tier on each side; `.gov` (3) > news (2) > blog (1). Three blogs never outrank one `.gov`.
+2. **Majority consensus**: when the best tiers tie, more sources wins
 3. **Flag for human review**: when everything ties
+
+Every `ConflictRecord` says which side won (`winning_side`), so the synthesis step knows not just *how* a conflict was resolved but *which way*.
 
 This is programmatic enforcement -- the CCA principle that code-enforced rules beat prompt-based guidance.
 
@@ -126,26 +130,28 @@ src/research_agents/
     context_builder.py      # Enforces context isolation
     subagents.py            # System prompts + tool sets per agent type
     conflict_resolver.py    # Deterministic: reliability, majority, human flag
+  testing.py                # Scripted client: replay fixed transcripts through the real loop
   models/
     research.py             # SubTask, ResearchReport, ConflictRecord, etc.
     errors.py               # ToolErrorResponse vs SilentFailureResponse
-  services/                 # 4 simulated in-memory services + ServiceContainer
+  services/                 # 4 simulated in-memory services + ServiceContainer + make_default_services()
   tools/
     definitions.py          # 5 tool-set constants (4 tools each)
     handlers.py             # Dispatch registry: DISPATCH[agent_type][tool_name]
+    _errors.py              # error_response(): every error is a serialized ToolErrorResponse
     web_researcher.py       # Handler implementations (structured errors)
     document_analyzer.py
     data_extractor.py
     fact_checker.py
   anti_patterns/
-    super_agent.py          # 18+ tools on one agent
+    super_agent.py          # 20 tools on one agent, with an unscoped dispatch
     shared_context.py       # Coordinator messages leaked to subagent
     silent_failures.py      # {"status":"success","data":null}
   data/
     sources.py              # Pre-built data with contradictions + errors
     scenarios.py            # 3 research scenarios with expected outcomes
 notebooks/                  # 9 teaching notebooks (00-08) with interleaved tutorials
-tests/                      # 180 tests: models, services, tools, agent, notebooks
+tests/                      # models, services, tools, agent, notebooks, docs
 scripts/
   generate_notebooks.py     # Programmatic notebook generation via nbformat
 docs/
@@ -154,11 +160,11 @@ docs/
 
 ## Testing
 
-All 180 tests run without an API key -- services are simulated in-memory.
+Every test runs without an API key -- services are simulated in-memory and model turns are scripted.
 
 The notebook-test correlation uses a 3-tier safety net:
-1. **Structural tests** verify notebooks have correct sections, imports, and metrics
-2. **Headless execution** runs non-API cells via `nbformat` + `exec()`
+1. **Structural tests** verify notebooks have correct sections, imports, and metrics, that every `compare_results()` value is measured (no literal booleans), and that the committed notebooks match `scripts/generate_notebooks.py`
+2. **Headless execution** runs every untagged cell via `nbformat` + `exec()`
 3. **Anti-pattern module tests** verify wrong code is wrong in the right way
 
 ## Series Context
@@ -166,7 +172,7 @@ The notebook-test correlation uses a 3-tier safety net:
 This is Article 4 of the CCA Exam Prep series by [Rick Hightower](https://medium.com/@rick-hightower) / [SpillWave](https://spillwave.com):
 
 1. **Complete Guide** -- Exam format, domain weights, study plan
-2. **Customer Support Agent** -- Escalation, compliance, tool design ([sibling project](../customer_service/))
+2. **Customer Support Agent** -- Escalation, compliance, tool design ([sibling project](../customer-support/))
 3. **Code Generation** -- Context degradation, CLAUDE.md hierarchy, CI/CD
 4. **Multi-Agent Research** -- Hub-and-spoke, context isolation, tool scoping (this project)
 5. **CI/CD with Claude Code** -- Headless flags, pipeline patterns
@@ -183,7 +189,7 @@ This codebase is the hands-on companion to the article [CCA Exam Prep: Mastering
 | The Super Agent Anti-Pattern | `tools/definitions.py`, `agent/subagents.py` | `03_tool_scoping` | `super_agent.py` | `test_anti_patterns.py`, `test_tools.py` |
 | Silent Subagent Failures | `models/errors.py`, `tools/handlers.py` | `04_error_handling` | `silent_failures.py` | `test_error_handling.py` |
 | Task Decomposition Strategies | `agent/coordinator.py` (`sort_tasks_into_waves`) | `05_task_decomposition` | -- | `test_coordinator.py` |
-| Validation and Conflict Resolution | `agent/conflict_resolver.py` | `06_conflict_resolution` | -- | `test_conflict_resolver.py` |
+| Validation and Conflict Resolution | `agent/conflict_resolver.py` | `06_conflict_resolution` | First-result-wins (in the notebook) | `test_conflict_resolver.py` |
 | MCP Primitives (Tools, Resources, Prompts) | `tools/definitions.py` | `07_mcp_primitives` | -- | `test_tools.py` |
 | End-to-End Integration | All modules | `08_integration` | All 3 anti-patterns | All test files |
 
@@ -207,13 +213,12 @@ The article walks through three representative exam questions. Each one maps to 
 
 The article's discussion questions can be explored hands-on using the notebooks:
 
-1. **"Why is hub-and-spoke coordination overhead lower than the super agent attention tax?"** -- Run `03_tool_scoping.ipynb` to see the tool count comparison and the `compare_results()` output showing selection accuracy differences.
+1. **"Why is hub-and-spoke coordination overhead lower than the super agent attention tax?"** -- Run `03_tool_scoping.ipynb` to see the tool count comparison and one out-of-scope tool call replayed through both routers: the super agent executes it, scoped dispatch refuses it with a structured error. (Selection *accuracy* is a model-behaviour claim the notebook does not measure.)
 2. **"What error response fields let you audit past runs for silent failures?"** -- Run `04_error_handling.ipynb` to compare `ToolErrorResponse` fields against the silent `{"status":"success","data":null}` response side-by-side.
 3. **"What fields allow the coordinator to retry vs. escalate vs. skip?"** -- The `ToolErrorResponse` model in `models/errors.py` has exactly these fields: `retry_eligible` (retry timeouts), `error_type` (escalate parse failures), `fallback_available` (skip permanently unavailable sources).
 
 ## Recommended Study Resources
 
 - [Anthropic Academy](https://anthropic.skilljar.com) -- 13 free courses
-- [CCA Exam Guide on SlideShare](https://www.slideshare.net/) -- Official exam guide
 - [Claude Agent SDK Docs](https://docs.anthropic.com/) -- Agent patterns
 - [MCP Documentation](https://modelcontextprotocol.io/) -- Tool/Resource/Prompt primitives
